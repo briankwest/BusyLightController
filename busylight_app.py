@@ -413,6 +413,7 @@ class LightController(QObject):
         self.light = None
         self.simulation_mode = False
         self.reconnect_timer = None
+        self.state_maintenance_timer = None
         
         # Load settings
         settings = QSettings("Busylight", "BusylightController")
@@ -422,8 +423,29 @@ class LightController(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_connect_device)
         
+        # Initialize state maintenance timer to refresh the light state every 5 seconds
+        self.state_maintenance_timer = QTimer(self)
+        self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
+        self.state_maintenance_timer.start(5000)  # 5 second interval
+        
         # Initial connection attempt
         self.try_connect_device()
+    
+    def refresh_light_state(self):
+        """Refresh the light state to keep it active"""
+        if self.light is not None and self.current_status != "off":
+            try:
+                # Get current color to check connection
+                _ = self.light.color
+                
+                # Reapply the current status to maintain state
+                self.set_status(self.current_status)
+                
+            except Exception:
+                # Light may be disconnected, try to reconnect
+                self.light = None
+                self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
+                self.try_connect_device()
     
     def try_connect_device(self):
         """Try to connect to the Busylight device"""
@@ -551,6 +573,10 @@ class BusylightApp(QMainWindow):
         self.setWindowTitle("Busylight Controller")
         self.setMinimumSize(600, 500)
         
+        # For both Mac and Windows - make window not appear in dock/taskbar
+        # by setting the window type to a utility/tool window
+        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
+        
         # Load settings
         self.settings = QSettings("Busylight", "BusylightController")
         
@@ -586,9 +612,11 @@ class BusylightApp(QMainWindow):
         # Check if we should start minimized
         start_minimized = self.settings.value("app/start_minimized", False, type=bool)
         if start_minimized:
+            # Just don't show the window and let the tray icon be the only visible UI
             self.hide()
         else:
-            self.show()
+            # Show and raise window to ensure visibility
+            self.show_and_raise()
         
         # Start worker thread
         self.worker_thread.start()
@@ -684,7 +712,7 @@ class BusylightApp(QMainWindow):
         
         # Add other actions
         show_action = tray_menu.addAction("Show")
-        show_action.triggered.connect(self.show)
+        show_action.triggered.connect(self.show_and_raise)
         
         exit_action = tray_menu.addAction("Exit")
         exit_action.triggered.connect(self.on_exit)
@@ -692,6 +720,9 @@ class BusylightApp(QMainWindow):
         # Set the context menu for the tray
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
+        
+        # Connect the activated signal to show window when icon is clicked
+        self.tray_icon.activated.connect(self.on_tray_activated)
     
     def update_tray_icon(self, status):
         """Create and update the tray icon based on current status"""
@@ -783,6 +814,11 @@ class BusylightApp(QMainWindow):
                 self.light_controller.reconnect_timer.stop()
                 print(f"[{get_timestamp()}] Stopped reconnect timer")
             
+            # Stop the state maintenance timer if it's running
+            if self.light_controller and hasattr(self.light_controller, 'state_maintenance_timer') and self.light_controller.state_maintenance_timer.isActive():
+                self.light_controller.state_maintenance_timer.stop()
+                print(f"[{get_timestamp()}] Stopped state maintenance timer")
+            
             # Stop the worker thread safely
             if hasattr(self, 'redis_worker') and self.redis_worker:
                 try:
@@ -835,7 +871,7 @@ class BusylightApp(QMainWindow):
             # Allow the close if the application is quitting
             event.accept()
         else:
-            # Minimize to tray instead of closing when just the window is closed
+            # Hide to tray instead of closing when just the window is closed
             self.hide()
             event.ignore()
 
@@ -898,6 +934,20 @@ class BusylightApp(QMainWindow):
                 "Simulation Mode" if self.light_controller.simulation_mode else ""
             ))
 
+    def show_and_raise(self):
+        """Show and raise the window to the top to make it visible"""
+        # Make sure it's visible and on top
+        self.show()
+        self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.raise_()
+        self.activateWindow()
+
+    def on_tray_activated(self, reason):
+        """Handle tray icon activation (like double-click)"""
+        # Only act on double click or trigger click (varies by platform)
+        if reason == QSystemTrayIcon.DoubleClick or reason == QSystemTrayIcon.Trigger:
+            self.show_and_raise()
+
 # Main application
 def main():
     app = QApplication(sys.argv)
@@ -914,8 +964,17 @@ def main():
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor(0, 255, 0))  # Default to green
         app_icon = QIcon(pixmap)
-        
+    
+    # Set app icon    
     app.setWindowIcon(app_icon)
+    
+    # Platform-specific customizations
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        # On macOS, we need to set this attribute to hide dock icon
+        app.setAttribute(Qt.AA_DontUseNativeMenuBar, True)
+    
+    # For both platforms, this will keep the app running without dock/taskbar icons
     
     # Create main window
     window = BusylightApp()

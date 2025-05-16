@@ -33,10 +33,10 @@ def build_application():
     # Common PyInstaller options
     common_options = [
         '--name=BusylightController',
-        '--onefile',
         '--windowed',
         '--add-data=icon.png:.',
         '--clean',
+        # Don't use onefile as it causes issues with accessing resources
     ]
     
     # Platform-specific options
@@ -44,7 +44,14 @@ def build_application():
         platform_options = [
             '--icon=icon.icns' if os.path.exists('icon.icns') else '--icon=icon.png',
             '--osx-bundle-identifier=com.busylight.controller',
+            # Add the Info.plist entries to make it a menu bar only app
+            '--osx-entitlements-file=entitlements.plist' if os.path.exists('entitlements.plist') else '',
         ]
+        
+        # For menubar-only apps on macOS, we need to modify the generated plist afterward
+        # '--osx-info-plist-additions' flag is not supported in all PyInstaller versions
+        # We'll handle this in post-processing instead
+        print("Will set LSUIElement in post-processing step")
     elif system == "Windows":
         platform_options = [
             '--icon=icon.ico' if os.path.exists('icon.ico') else '--icon=icon.png',
@@ -56,11 +63,41 @@ def build_application():
     # Combine options and run PyInstaller
     command = ['pyinstaller'] + common_options + platform_options + ['busylight_app_main.py']
     
+    # Filter out empty strings from options
+    command = [opt for opt in command if opt]
+    
     try:
         print(f"Running PyInstaller with command: {' '.join(command)}")
         subprocess.run(command, check=True)
         print("\nBuild completed successfully!")
         print(f"Application can be found in the dist/ directory")
+        
+        # Additional processing for macOS to ensure LSUIElement is set
+        if system == "Darwin" and os.path.exists("dist/BusylightController.app/Contents/Info.plist"):
+            print("Ensuring LSUIElement is set in Info.plist...")
+            try:
+                # Read the Info.plist
+                with open("dist/BusylightController.app/Contents/Info.plist", "r") as f:
+                    info_plist = f.read()
+                
+                # Check if LSUIElement is already set
+                if "<key>LSUIElement</key>" not in info_plist:
+                    # Find the <dict> opening tag, and insert our LSUIElement key right after it
+                    dict_pos = info_plist.find("<dict>") + len("<dict>")
+                    new_plist = (info_plist[:dict_pos] + 
+                                "\n\t<key>LSUIElement</key>\n\t<true/>" + 
+                                info_plist[dict_pos:])
+                    
+                    # Write the updated Info.plist
+                    with open("dist/BusylightController.app/Contents/Info.plist", "w") as f:
+                        f.write(new_plist)
+                    
+                    print("LSUIElement key added to Info.plist")
+                else:
+                    print("LSUIElement already set in Info.plist")
+            except Exception as e:
+                print(f"Error updating Info.plist: {e}")
+                
     except subprocess.CalledProcessError as e:
         print(f"Error during build: {e}")
         return False
