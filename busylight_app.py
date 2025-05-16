@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings
 from PySide6.QtGui import QIcon, QColor, QPixmap
 import subprocess
+import webbrowser
 
 # Busylight
 try:
@@ -251,86 +252,118 @@ class ConfigDialog(QDialog):
             self.redis_token_input.setEchoMode(QLineEdit.Password)
     
     def test_tts_command(self):
-        """Test the configured TTS command"""
-        command = self.tts_command_input.text()
-        if not command:
-            self.test_status_label.setText("Error: No TTS command specified")
-            self.test_status_label.setStyleSheet("color: red;")
-            return
-            
-        # Replace placeholder with a test message
-        command = command.replace("{summary}", "This is a test of the text to speech system")
-        
+        """Test the text-to-speech functionality securely"""
         try:
-            # Run the command
-            subprocess.Popen(command, shell=True)
-            self.test_status_label.setText("TTS test command sent")
-            self.test_status_label.setStyleSheet("color: green;")
+            # Use platform-specific approaches for safer TTS testing
+            system = platform.system()
+            test_message = "This is a test of the text to speech system"
+            
+            if system == "Darwin":  # macOS
+                # Use macOS say command directly
+                subprocess.Popen(["say", test_message], shell=False)
+                self.test_status_label.setText("TTS test command sent")
+                self.test_status_label.setStyleSheet("color: green;")
+            
+            elif system == "Windows":
+                # Use PowerShell with safer argument passing
+                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
+                ps_script = ps_script.format(test_message.replace("'", "''"))  # PowerShell escape single quotes
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                self.test_status_label.setText("TTS test command sent")
+                self.test_status_label.setStyleSheet("color: green;")
+            
+            else:  # Linux and other platforms - attempt to use festival
+                # Safer approach for Linux using pipes instead of shell
+                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
+                process.communicate(test_message.encode())
+                self.test_status_label.setText("TTS test command sent")
+                self.test_status_label.setStyleSheet("color: green;")
+                
         except Exception as e:
-            self.test_status_label.setText(f"Error running TTS command: {e}")
+            self.test_status_label.setText(f"Error: {str(e)}")
             self.test_status_label.setStyleSheet("color: red;")
             
         # Clear the message after a delay
         QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
     
     def test_url_command(self):
-        """Test the configured URL command"""
-        command = self.url_command_input.text()
-        if not command:
-            self.test_status_label.setText("Error: No URL command specified")
-            self.test_status_label.setStyleSheet("color: red;")
-            return
-            
-        # Replace placeholder with a test URL
-        command = command.replace("{url}", "https://www.signalwire.com")
-        
+        """Test the URL opening functionality securely"""
         try:
-            # Run the command
-            subprocess.Popen(command, shell=True)
-            self.test_status_label.setText("URL test command sent")
-            self.test_status_label.setStyleSheet("color: green;")
+            # Use the standard webbrowser module which is safer than shell commands
+            test_url = "https://www.signalwire.com"
+            if webbrowser.open(test_url):
+                self.test_status_label.setText("Test URL opened successfully")
+                self.test_status_label.setStyleSheet("color: green;")
+            else:
+                self.test_status_label.setText("Failed to open URL with default browser")
+                self.test_status_label.setStyleSheet("color: red;")
         except Exception as e:
-            self.test_status_label.setText(f"Error running URL command: {e}")
+            self.test_status_label.setText(f"Error: {str(e)}")
             self.test_status_label.setStyleSheet("color: red;")
             
         # Clear the message after a delay
         QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
     
     def setup_autostart(self, enable):
-        """Setup application to run at system startup"""
+        """Setup application to run at system startup with improved security"""
         # Implementation differs based on operating system
         system = platform.system()
         
         if system == "Darwin":  # macOS
-            # For macOS, we'd need to create a LaunchAgent
-            # This is simplified and may need adjustment
-            app_path = QApplication.applicationFilePath()
-            plist_dir = os.path.expanduser("~/Library/LaunchAgents")
-            plist_path = os.path.join(plist_dir, "com.busylight.controller.plist")
-            
-            if enable:
-                os.makedirs(plist_dir, exist_ok=True)
-                with open(plist_path, "w") as f:
-                    f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.busylight.controller</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{app_path}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>""")
-            else:
-                if os.path.exists(plist_path):
-                    os.remove(plist_path)
+            try:
+                # For macOS, create a LaunchAgent with proper path validation
+                app_path = QApplication.applicationFilePath()
+                
+                # Validate the application path
+                if not os.path.isfile(app_path) or not os.access(app_path, os.X_OK):
+                    self.log_message.emit(f"[{get_timestamp()}] Error: Invalid application path for autostart")
+                    return
+                
+                plist_dir = os.path.expanduser("~/Library/LaunchAgents")
+                plist_path = os.path.join(plist_dir, "com.busylight.controller.plist")
+                
+                if enable:
+                    os.makedirs(plist_dir, exist_ok=True)
+                    
+                    # XML template using ElementTree for safer XML generation
+                    import xml.etree.ElementTree as ET
+                    root = ET.Element("plist", version="1.0")
+                    
+                    # Create the plist structure
+                    dict_element = ET.SubElement(root, "dict")
+                    
+                    # Label
+                    ET.SubElement(dict_element, "key").text = "Label"
+                    ET.SubElement(dict_element, "string").text = "com.busylight.controller"
+                    
+                    # Program arguments
+                    ET.SubElement(dict_element, "key").text = "ProgramArguments"
+                    array_element = ET.SubElement(dict_element, "array")
+                    ET.SubElement(array_element, "string").text = app_path
+                    
+                    # Run at load
+                    ET.SubElement(dict_element, "key").text = "RunAtLoad"
+                    ET.SubElement(dict_element, "true")
+                    
+                    # Create plist XML
+                    tree = ET.ElementTree(root)
+                    
+                    # Add DOCTYPE
+                    with open(plist_path, "w") as f:
+                        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                        f.write('<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n')
+                        tree.write(f, encoding='unicode')
+                        
+                    self.log_message.emit(f"[{get_timestamp()}] Added to macOS startup")
+                    
+                else:
+                    if os.path.exists(plist_path):
+                        os.remove(plist_path)
+                        self.log_message.emit(f"[{get_timestamp()}] Removed from macOS startup")
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error setting up macOS autostart: {e}")
             
         elif system == "Windows":
-            # For Windows, add/remove from the registry
             try:
                 # Only import winreg on Windows
                 import winreg
@@ -339,7 +372,6 @@ class ConfigDialog(QDialog):
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE) as key:
                     if enable:
                         # Get the full path to executable
-                        # For PyInstaller, __file__ might not work as expected
                         if getattr(sys, 'frozen', False):
                             # Running as bundled executable
                             app_path = sys.executable
@@ -347,6 +379,11 @@ class ConfigDialog(QDialog):
                             # Running as script
                             app_path = QApplication.applicationFilePath()
                         
+                        # Validate the application path
+                        if not os.path.isfile(app_path) or not os.access(app_path, os.X_OK):
+                            self.log_message.emit(f"[{get_timestamp()}] Error: Invalid application path for autostart")
+                            return
+                            
                         # Make sure we have proper backslashes for Windows
                         app_path = app_path.replace('/', '\\')
                         
@@ -376,13 +413,28 @@ class ConfigDialog(QDialog):
         QApplication.processEvents()
         
         try:
-            # Try to get Redis password using token
+            # Basic host validation to prevent SSRF
+            if not self.validate_redis_host(host):
+                self.test_status_label.setText(f"Error: Invalid Redis host")
+                self.test_status_label.setStyleSheet("color: red; font-weight: bold;")
+                return
+            
+            # Try to get Redis password using token with HTTPS
             headers = {
                 'Content-Type': 'application/json',
                 'Authorization': f'Bearer {token}'
             }
-            r = requests.get(f'http://{host}/api/status/redis-info', headers=headers, timeout=5)
-            data = json.loads(r.text)
+            
+            url = f'https://{host}/api/status/redis-info'
+            r = requests.get(url, headers=headers, timeout=5, verify=True)
+            
+            # Check for successful response
+            if r.status_code != 200:
+                self.test_status_label.setText(f"Failed: HTTP {r.status_code}")
+                self.test_status_label.setStyleSheet("color: red; font-weight: bold;")
+                return
+                
+            data = r.json()
             
             if 'password' in data:
                 # Try to connect to Redis
@@ -391,7 +443,9 @@ class ConfigDialog(QDialog):
                     port=port,
                     password=data['password'],
                     db=0,
-                    decode_responses=True            
+                    decode_responses=True,
+                    socket_timeout=5,
+                    socket_connect_timeout=5
                 )
                 
                 # Check if Redis connection is successful
@@ -412,7 +466,26 @@ class ConfigDialog(QDialog):
         
         # Clear the status label after a delay
         QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
-
+    
+    def validate_redis_host(self, host):
+        """Validate Redis host to prevent SSRF attacks"""
+        # Basic validation - could be extended with a whitelist approach
+        if not host or len(host) < 3:
+            return False
+            
+        # Prevent localhost, private IPs, etc.
+        forbidden_patterns = [
+            'localhost', '127.', '192.168.', '10.', '172.16.', '172.17.', 
+            '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.',
+            '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+            '172.30.', '172.31.', '0.0.0.0', 'internal', 'local'
+        ]
+        
+        for pattern in forbidden_patterns:
+            if pattern in host.lower():
+                return False
+                
+        return True
 
 # Worker class to handle redis operations in background
 class RedisWorker(QObject):
@@ -465,16 +538,53 @@ class RedisWorker(QObject):
             return False
             
     def get_redis_password(self):
+        """Get Redis password securely using HTTPS"""
+        # Validate the host to prevent SSRF attacks
+        if not self.validate_redis_host(self.redis_host):
+            raise ValueError(f"Invalid Redis host: {self.redis_host}")
+        
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {self.redis_bearer_token}'
         }
         try:
-            r = requests.get(f'http://{self.redis_host}/api/status/redis-info', headers=headers)
-            return json.loads(r.text)['password']
+            # Use HTTPS instead of HTTP for secure communication
+            url = f'https://{self.redis_host}/api/status/redis-info'
+            r = requests.get(url, headers=headers, timeout=5, verify=True)
+            
+            # Check for successful response
+            if r.status_code != 200:
+                self.log_message.emit(f"[{get_timestamp()}] Error retrieving Redis password: HTTP {r.status_code}")
+                raise ValueError(f"API returned status code {r.status_code}")
+                
+            data = r.json()
+            if 'password' not in data:
+                raise ValueError("Password not found in API response")
+                
+            return data['password']
         except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error getting redis password: {e}")
+            self.log_message.emit(f"[{get_timestamp()}] Error getting Redis password: {e}")
             raise
+    
+    def validate_redis_host(self, host):
+        """Validate Redis host to prevent SSRF attacks"""
+        # Basic validation - could be extended with a whitelist approach
+        if not host or len(host) < 3:
+            return False
+            
+        # Prevent localhost, private IPs, etc.
+        forbidden_patterns = [
+            'localhost', '127.', '192.168.', '10.', '172.16.', '172.17.', 
+            '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.',
+            '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+            '172.30.', '172.31.', '0.0.0.0', 'internal', 'local'
+        ]
+        
+        for pattern in forbidden_patterns:
+            if pattern in host.lower():
+                return False
+                
+        return True
             
     def run(self):
         if not self.connect_to_redis():
@@ -715,7 +825,7 @@ class LightController(QObject):
                 self.reconnect_timer.start(10000)  # Try every 10 seconds
                 self.log_message.emit(f"[{get_timestamp()}] Will try to reconnect every 10 seconds")
     
-    def set_status(self, status, log_action=True):
+    def set_status(self, status, log_action=False):
         """Set light status with optional logging and UI updates."""
         if not self.light and not self.simulation_mode:
             if log_action:
@@ -1430,21 +1540,34 @@ class BusylightApp(QMainWindow):
         if not tts_cmd_template:
             self.add_log(f"[{get_timestamp()}] Warning: TTS enabled but no command template configured")
             return
-            
-        # Replace the placeholder with the actual summary
-        # Sanitize the summary by escaping quotes
-        sanitized_summary = summary.replace('"', '\\"').replace("'", "\\'")
-        command = tts_cmd_template.replace("{summary}", sanitized_summary)
         
         try:
-            # Run the command in a background process
-            subprocess.Popen(command, shell=True)
-            self.add_log(f"[{get_timestamp()}] Speaking ticket summary")
+            # Use platform-specific approaches for safer TTS
+            system = platform.system()
+            
+            if system == "Darwin":  # macOS
+                # Use macOS say command directly with list arguments
+                subprocess.Popen(["say", summary], shell=False)
+                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using macOS say command")
+            
+            elif system == "Windows":
+                # Use PowerShell with safer argument passing
+                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
+                ps_script = ps_script.format(summary.replace("'", "''"))  # PowerShell escape single quotes
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using Windows speech")
+            
+            else:  # Linux and other platforms - attempt to use festival
+                # Safer approach for Linux using pipes instead of shell
+                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
+                process.communicate(summary.encode())
+                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using festival")
+                
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error executing TTS command: {e}")
     
     def open_ticket_url(self, url):
-        """Open the ticket URL using the configured command"""
+        """Open the ticket URL using a secure method"""
         # Load URL settings
         settings = QSettings("Busylight", "BusylightController")
         url_enabled = settings.value("url/enabled", False, type=bool)
@@ -1452,21 +1575,19 @@ class BusylightApp(QMainWindow):
         if not url_enabled:
             return
             
-        # Get the command template
-        url_cmd_template = settings.value("url/command_template", "")
-        if not url_cmd_template:
-            self.add_log(f"[{get_timestamp()}] Warning: URL opening enabled but no command template configured")
+        # Basic URL validation
+        if not url.startswith(('http://', 'https://')):
+            self.add_log(f"[{get_timestamp()}] Warning: Invalid URL format: {url}")
             return
             
-        # Replace the placeholder with the actual URL
-        command = url_cmd_template.replace("{url}", url)
-        
         try:
-            # Run the command in a background process
-            subprocess.Popen(command, shell=True)
-            self.add_log(f"[{get_timestamp()}] Opening ticket URL")
+            # Use the standard webbrowser module which is safer than shell commands
+            if webbrowser.open(url):
+                self.add_log(f"[{get_timestamp()}] Opening ticket URL safely using webbrowser module")
+            else:
+                self.add_log(f"[{get_timestamp()}] Failed to open URL with default browser")
         except Exception as e:
-            self.add_log(f"[{get_timestamp()}] Error executing URL command: {e}")
+            self.add_log(f"[{get_timestamp()}] Error opening URL: {e}")
 
 # Main application
 def main():

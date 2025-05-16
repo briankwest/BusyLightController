@@ -44,6 +44,7 @@ def build_application():
         platform_options = [
             '--icon=icon.icns' if os.path.exists('icon.icns') else '--icon=icon.png',
             '--osx-bundle-identifier=com.busylight.controller',
+            '--noconfirm',
             # Add the Info.plist entries to make it a menu bar only app
             '--osx-entitlements-file=entitlements.plist' if os.path.exists('entitlements.plist') else '',
         ]
