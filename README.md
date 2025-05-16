@@ -1,102 +1,95 @@
 # Busylight Controller
 
-A cross-platform application to control your Busylight device based on status updates from a Redis server.
+A desktop application to control USB Busylights for status indication, with integration for ticket systems via Redis.
 
 ## Features
 
+- Controls Kuando Busylight devices
+- Supports multiple status indicators (alert, warning, normal, etc.)
+- Integrates with ticket systems via Redis
+- Text-to-speech for ticket announcements
+- URL opening for tickets
 - System tray integration
-- Status display and manual light control
-- Redis connection settings
-- Device auto-reconnection
-- Simulation mode when no physical device is available
+- Autostart capability
+- Cross-platform support (macOS and Windows)
 
-## Windows Installation
+## Development Setup
 
-### Option 1: Pre-built executable
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/busylight.git
+   cd busylight
+   ```
 
-1. Download the latest release from the releases page
-2. Extract the ZIP file
-3. Run `BusylightController.exe`
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-### Option 2: Build from source
+3. Run in development mode:
+   ```
+   python run_dev.py
+   ```
 
-1. Make sure Python 3.7+ is installed
-2. Clone this repository
+## Building Installers
+
+### Prerequisites
+
+- Python 3.7 or higher
+- PyInstaller (`pip install pyinstaller`)
+- For macOS: Xcode Command Line Tools
+- For Windows: [WiX Toolset](https://wixtoolset.org/releases/) (add to PATH)
+
+### Building for macOS (PKG installer)
+
+1. Run the build script:
+   ```
+   python build_mac_pkg.py
+   ```
+
+2. The PKG installer will be created in the `dist` directory.
+
+### Building for Windows (MSI installer)
+
+1. Install WiX Toolset and add it to your PATH.
+
+2. For converting icons, either install Pillow (`pip install Pillow`) or ImageMagick.
+
 3. Run the build script:
    ```
-   build_windows.bat
+   python build_windows_msi.py
    ```
-4. The executable will be in the `dist/BusylightController` directory
+
+4. The MSI installer will be created in the `dist` directory.
 
 ## Configuration
 
-On first run, configure the Redis connection:
+The application stores its configuration in:
+- macOS: `~/Library/Preferences/Busylight/BusylightController.plist`
+- Windows: Registry under `HKEY_CURRENT_USER\Software\Busylight\BusylightController`
 
-1. Click on the "Configuration" button
-2. Enter the Redis host, port, and bearer token
-3. Test the connection to verify settings
+### Redis Configuration
 
-## Running at Startup
+- Host: Redis server address (default: busylight.signalwire.me)
+- Port: Redis server port (default: 6379)
+- Bearer Token: Authentication token for the Redis API
 
-To have the application start automatically when Windows starts:
+### Text-to-Speech Configuration
 
-1. Open the Configuration dialog
-2. Check the "Run at System Startup" option
-3. Click Save
+Enable TTS announcements for ticket summaries.
 
-## Usage
+### URL Handler Configuration
 
-- The application runs in the system tray
-- Right-click the tray icon to access options
-- Use the main window to view status and logs
-- Manually control the light color from the dropdown
+Enable opening ticket URLs in your default browser.
 
-## Troubleshooting
+## Security
 
-If the device is not detected:
-1. Make sure the Busylight is connected via USB
-2. Try using the "Reconnect Device" button
-3. Check that the device has proper permissions
-4. Enable "Simulation Mode" in Configuration if no device is available
-
-## Requirements
-
-- Windows 10/11
-- USB port for the Busylight device
-
-## Building Native Applications
-
-This project can be compiled into native applications for Mac and Windows using PyInstaller.
-
-### Build Requirements
-
-- PyInstaller
-- Icon file (icon.png, icon.ico for Windows, icon.icns for Mac)
-
-### Building
-
-Run the build script:
-
-```
-python build.py
-```
-
-The script will:
-1. Install all dependencies
-2. Create necessary platform-specific files
-3. Build the application with PyInstaller
-4. Place the compiled application in the `dist` directory
-
-### Platform-Specific Notes
-
-#### Mac
-- The compiled application will be a universal binary (Intel/Apple Silicon)
-- For proper signing, you'll need to use codesign after building
-
-#### Windows
-- The application will include proper version information
-- For signing, you'll need to use signtool after building
+The application implements several security measures:
+- HTTPS for API communication
+- Host validation to prevent SSRF attacks
+- Safe command execution (no shell injection vulnerabilities)
+- Input validation for all external data
 
 ## License
 
-This project is based on Shane Harrell's original Busylight worker script. 
+[Your License Here] 
