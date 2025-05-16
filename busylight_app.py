@@ -395,7 +395,13 @@ class LightController(QObject):
         'error': (255, 0, 255),
         'normal': (0, 255, 0),  # default (renamed from 'default' to 'normal')
         'default': (0, 255, 0), # For backward compatibility with original script
-        'off': (0, 0, 0)        # off
+        'off': (0, 0, 0),        # off
+        # Additional colors
+        'blue': (0, 0, 255),     # Blue
+        'cyan': (0, 255, 255),   # Cyan
+        'magenta': (255, 0, 255), # Magenta
+        'pink': (255, 105, 180),  # Pink
+        'white': (255, 255, 255)  # White
     }
 
     COLOR_NAMES = {
@@ -404,7 +410,26 @@ class LightController(QObject):
         'warning': "Yellow (Warning)",
         'error': "Purple (Error)",
         'normal': "Green (Normal)",
-        'off': "Off"
+        'off': "Off",
+        # Additional colors
+        'blue': "Blue",
+        'cyan': "Cyan",
+        'magenta': "Magenta",
+        'pink': "Pink",
+        'white': "White"
+    }
+    
+    # Dictionary of available effects
+    EFFECTS = {
+        'none': "Solid Color (No Effect)",
+        'blink': "Blink"
+    }
+    
+    # Dictionary of available ringtones
+    RINGTONES = {
+        'off': Ring.Off,
+        'quiet': Ring.Quiet,
+        'funky': Ring.Funky
     }
     
     def __init__(self, parent=None):
@@ -414,6 +439,11 @@ class LightController(QObject):
         self.simulation_mode = False
         self.reconnect_timer = None
         self.state_maintenance_timer = None
+        self.current_effect = "none"
+        self.current_ringtone = "off"
+        self.current_volume = 0
+        self.effect_timer = None
+        self.device_connection_attempted = False
         
         # Load settings
         settings = QSettings("Busylight", "BusylightController")
@@ -428,8 +458,12 @@ class LightController(QObject):
         self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
         self.state_maintenance_timer.start(20000)  # 20 second interval
         
-        # Initial connection attempt
-        self.try_connect_device()
+        # Initialize effect timer for blinking and other effects
+        self.effect_timer = QTimer(self)
+        self.effect_timer.timeout.connect(self.update_effect)
+        
+        # Explicitly connect and emit initial device status
+        QTimer.singleShot(0, self.try_connect_device)
     
     def refresh_light_state(self):
         """Refresh the light state to keep it active"""
@@ -447,8 +481,29 @@ class LightController(QObject):
                 self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
                 self.try_connect_device()
     
+    def update_effect(self):
+        """Update the light effect animation based on the current effect"""
+        if not self.light or self.simulation_mode or self.current_status == "off":
+            return
+        
+        if self.current_effect == "blink":
+            # Toggle the light on and off for blinking effect
+            try:
+                current_state = self.light.color
+                if current_state == (0, 0, 0):  # If light is off
+                    color = self.COLOR_MAP[self.current_status]
+                    self.light.on(color)
+                else:  # If light is on
+                    self.light.off()
+                self.light.update()
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error updating blink effect: {e}")
+    
     def try_connect_device(self):
         """Try to connect to the Busylight device"""
+        # Mark that we've attempted connection
+        self.device_connection_attempted = True
+        
         # If we already have a light, no need to reconnect
         if self.light is not None:
             # Check if the light is still working
@@ -488,25 +543,11 @@ class LightController(QObject):
             if self.current_status != "off":
                 self.set_status(self.current_status)
                 
-        except LightUnavailable as e:
+        except Exception as e:
+            # Handle both LightUnavailable and NoLightsFound exceptions
             if not self.simulation_mode and self.allow_simulation:
                 self.simulation_mode = True
                 self.log_message.emit(f"[{get_timestamp()}] Device unavailable ({str(e)}). Running in simulation mode.")
-            
-            # Emit device disconnected signal
-            self.device_status_changed.emit(False, "")
-            
-            # Start the reconnect timer if not already running
-            if not self.reconnect_timer.isActive():
-                self.reconnect_timer.start(10000)  # Try every 10 seconds
-                self.log_message.emit(f"[{get_timestamp()}] Will try to reconnect every 10 seconds")
-        
-        except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error connecting to light: {e}")
-            
-            if not self.simulation_mode and self.allow_simulation:
-                self.simulation_mode = True
-                self.log_message.emit(f"[{get_timestamp()}] Running in simulation mode. Status changes will be shown in the UI only.")
             
             # Emit device disconnected signal
             self.device_status_changed.emit(False, "")
@@ -539,13 +580,17 @@ class LightController(QObject):
         if self.simulation_mode:
             return
         
-        # Defaults
+        # Set ringtone only if it's explicitly selected (not "off")
         ringtone = Ring.Off
         volume = 0
         
-        # Special case for alert status
-        if status == 'alert':
-            ringtone = Ring.OpenOffice
+        if self.current_ringtone != "off":
+            ringtone = self.RINGTONES.get(self.current_ringtone, Ring.Off)
+            volume = self.current_volume
+        
+        # Special case for alert status - only play sound if we haven't explicitly set a different ringtone
+        if status == 'alert' and self.current_ringtone == 'off':
+            ringtone = Ring.Funky
             volume = 7
         
         try:
@@ -562,7 +607,39 @@ class LightController(QObject):
             command_bytes = bytes(cmd_buffer)
 
             self.light.write_strategy(command_bytes)
-            self.light.on(color)
+            
+            # Apply the effect if one is set
+            if self.current_effect == "none" or status == "off":
+                # Stop any running effect timer
+                if self.effect_timer.isActive():
+                    self.effect_timer.stop()
+                # Just set the solid color
+                if status == "off":
+                    self.light.off()
+                else:
+                    self.light.on(color)
+            elif self.current_effect == "blink":
+                # Try to use the light's native blink capability if available
+                if hasattr(self.light, 'blink'):
+                    try:
+                        # Stop any running effect timer
+                        if self.effect_timer.isActive():
+                            self.effect_timer.stop()
+                        # Use native blink functionality
+                        self.light.blink(color)
+                        self.log_message.emit(f"[{get_timestamp()}] Using light's native blink capability")
+                    except Exception as e:
+                        self.log_message.emit(f"[{get_timestamp()}] Error using native blink: {e}. Falling back to timer-based blink.")
+                        # Fall back to timer blink
+                        self.light.on(color)
+                        if not self.effect_timer.isActive():
+                            self.effect_timer.start(500)  # Blink every 500ms
+                else:
+                    # Use timer-based blinking
+                    self.light.on(color)
+                    if not self.effect_timer.isActive():
+                        self.effect_timer.start(500)  # Blink every 500ms
+                
             self.light.update()
         except Exception as e:
             if log_action:
@@ -571,124 +648,193 @@ class LightController(QObject):
     def turn_off(self):
         self.set_status('off')
 
+    def set_effect(self, effect_name, log_action=True):
+        """Set the current light effect"""
+        if effect_name in self.EFFECTS:
+            # Stop any running effect timer if changing effects
+            if self.current_effect != effect_name and self.effect_timer and self.effect_timer.isActive():
+                self.effect_timer.stop()
+                
+            self.current_effect = effect_name
+            
+            if log_action:
+                self.log_message.emit(f"[{get_timestamp()}] Setting effect to {self.EFFECTS[effect_name]}")
+                
+            # Apply the effect with current status if not "none"
+            if effect_name != "none" and self.current_status != "off":
+                self.set_status(self.current_status, log_action)
+        else:
+            self.log_message.emit(f"[{get_timestamp()}] Unknown effect: {effect_name}")
+    
+    def set_ringtone(self, ringtone_name, volume=5, log_action=True):
+        """Set the current ringtone and volume"""
+        if ringtone_name in self.RINGTONES:
+            previous_ringtone = self.current_ringtone
+            previous_volume = self.current_volume
+            
+            self.current_ringtone = ringtone_name
+            self.current_volume = volume
+            
+            if log_action:
+                if ringtone_name == "off":
+                    self.log_message.emit(f"[{get_timestamp()}] Turning off ringtone")
+                else:
+                    self.log_message.emit(f"[{get_timestamp()}] Setting ringtone to {ringtone_name} with volume {volume}")
+            
+            # Apply the ringtone immediately if the light is on
+            if self.light is not None and not self.simulation_mode and self.current_status != "off":
+                self.set_status(self.current_status, log_action=False)
+        else:
+            self.log_message.emit(f"[{get_timestamp()}] Unknown ringtone: {ringtone_name}")
+
 # Main window class
 class BusylightApp(QMainWindow):
     def __init__(self):
         super().__init__()
         
+        # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
-        self.setMinimumSize(600, 500)
+        self.setWindowIcon(QIcon("icon.png"))
         
-        # For both Mac and Windows - make window not appear in dock/taskbar
-        # by setting the window type to a utility/tool window
-        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
+        # Initialize blinking variables
+        self.tray_blink_timer = QTimer(self)
+        self.tray_blink_timer.timeout.connect(self.toggle_tray_icon)
+        self.tray_icon_visible = True
         
-        # Load settings
-        self.settings = QSettings("Busylight", "BusylightController")
-        
-        # Initialize components
+        # Create the light controller first
         self.light_controller = LightController()
-        self.light_controller.log_message.connect(self.add_log)
-        self.light_controller.color_changed.connect(self.update_status_display)
-        self.light_controller.device_status_changed.connect(self.update_device_status)
         
-        # Setup worker thread for Redis
-        self.worker_thread = QThread()
-        self.redis_worker = RedisWorker()
-        self.redis_worker.moveToThread(self.worker_thread)
-        self.redis_worker.log_message.connect(self.add_log)
-        self.redis_worker.status_updated.connect(self.light_controller.set_status)
-        self.redis_worker.connection_status.connect(self.update_connection_status)
-        self.worker_thread.started.connect(self.redis_worker.run)
-        
-        # Create UI
-        self.setup_ui()
+        # Create UI after controller exists
+        self.create_main_ui()
         
         # Setup system tray
         self.setup_tray()
         
-        # Initialize device status display
-        if self.light_controller.light:
-            self.update_device_status(True, self.light_controller.light.name)
-        elif self.light_controller.simulation_mode:
-            self.update_device_status(False, "Simulation Mode")
-        else:
-            self.update_device_status(False, "")
+        # Set up connections to UI after both UI and controller exist
+        self.light_controller.log_message.connect(self.add_log)
+        self.light_controller.color_changed.connect(self.update_status_display)
+        self.light_controller.device_status_changed.connect(self.update_device_status)
         
-        # Check if we should start minimized
-        start_minimized = self.settings.value("app/start_minimized", False, type=bool)
-        if start_minimized:
-            # Just don't show the window and let the tray icon be the only visible UI
-            self.hide()
-        else:
-            # Show and raise window to ensure visibility
-            self.show_and_raise()
-        
-        # Start worker thread
+        # Create Redis worker thread
+        self.worker_thread = QThread()
+        self.redis_worker = RedisWorker()
+        self.redis_worker.moveToThread(self.worker_thread)
+        self.redis_worker.status_updated.connect(self.light_controller.set_status)
+        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
+        self.redis_worker.log_message.connect(self.add_log)
+        self.worker_thread.started.connect(self.redis_worker.run)
         self.worker_thread.start()
         
-    def setup_ui(self):
-        # Main widget and layout
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
+        # Explicitly refresh connection on startup after UI is ready
+        QTimer.singleShot(100, self.manually_connect_device)
         
-        # Status display
-        status_group = QGroupBox("Current Status")
-        status_layout = QVBoxLayout(status_group)
+    def create_main_ui(self):
+        """Create the main UI components"""
+        main_widget = QWidget()
+        layout = QVBoxLayout()
         
+        # Status and control section
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout()
+        
+        # Status indicator
         self.status_label = QLabel("Status: Off")
-        self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        
-        self.connection_label = QLabel("Connection: Disconnected")
-        self.connection_label.setAlignment(Qt.AlignCenter)
-        
-        self.device_label = QLabel("Device: Disconnected")
-        self.device_label.setAlignment(Qt.AlignCenter)
-        self.device_label.setStyleSheet("color: red;")
-        
-        # Add refresh button for reconnection attempts
-        refresh_button = QPushButton("Reconnect Device")
-        refresh_button.clicked.connect(self.manually_connect_device)
-        
+        self.status_label.setAlignment(Qt.AlignCenter)
         status_layout.addWidget(self.status_label)
-        status_layout.addWidget(self.connection_label)
+        
+        # Device info
+        self.device_label = QLabel("Device: Disconnected")
+        self.device_label.setStyleSheet("color: red;")
+        self.device_label.setAlignment(Qt.AlignCenter)
         status_layout.addWidget(self.device_label)
-        status_layout.addWidget(refresh_button)
         
-        # Manual control
-        control_group = QGroupBox("Manual Control")
-        control_layout = QVBoxLayout(control_group)
+        # Control section
+        control_layout = QHBoxLayout()
         
+        # Status selection dropdown
+        status_layout_left = QVBoxLayout()
+        status_layout_left.addWidget(QLabel("Status:"))
         self.status_combo = QComboBox()
-        for status in self.light_controller.COLOR_NAMES:
-            self.status_combo.addItem(self.light_controller.COLOR_NAMES[status], status)
+        for status, name in self.light_controller.COLOR_NAMES.items():
+            self.status_combo.addItem(name, status)
+        status_layout_left.addWidget(self.status_combo)
         
-        set_status_button = QPushButton("Set Status")
-        set_status_button.clicked.connect(self.on_set_status)
+        # Effect selection dropdown
+        status_layout_left.addWidget(QLabel("Effect:"))
+        self.effect_combo = QComboBox()
+        for effect, name in self.light_controller.EFFECTS.items():
+            self.effect_combo.addItem(name, effect)
+        status_layout_left.addWidget(self.effect_combo)
+        self.effect_combo.currentIndexChanged.connect(self.on_effect_changed)
         
-        # Add configuration button
-        config_button = QPushButton("Configuration")
-        config_button.clicked.connect(self.show_config_dialog)
+        control_layout.addLayout(status_layout_left)
         
-        control_layout.addWidget(self.status_combo)
-        control_layout.addWidget(set_status_button)
-        control_layout.addWidget(config_button)
+        # Right side - ringtone controls
+        status_layout_right = QVBoxLayout()
+        status_layout_right.addWidget(QLabel("Ringtone:"))
+        self.ringtone_combo = QComboBox()
+        # Add Off option first
+        self.ringtone_combo.addItem("Off", "off")
+        # Add all other ringtones
+        for ringtone in self.light_controller.RINGTONES.keys():
+            if ringtone != "off":  # Skip 'off' as we already added it
+                self.ringtone_combo.addItem(ringtone.capitalize(), ringtone)
+        status_layout_right.addWidget(self.ringtone_combo)
+        self.ringtone_combo.currentIndexChanged.connect(self.on_ringtone_changed)
         
-        # Log display
+        # Volume control
+        status_layout_right.addWidget(QLabel("Volume:"))
+        self.volume_combo = QComboBox()
+        for i in range(11):  # 0-10 volume levels
+            self.volume_combo.addItem(f"{i}", i)
+        self.volume_combo.setCurrentIndex(5)  # Default to 5
+        status_layout_right.addWidget(self.volume_combo)
+        self.volume_combo.currentIndexChanged.connect(self.on_ringtone_changed)
+        
+        control_layout.addLayout(status_layout_right)
+        
+        status_layout.addLayout(control_layout)
+        
+        # Apply button
+        apply_layout = QHBoxLayout()
+        self.set_status_button = QPushButton("Apply")
+        self.set_status_button.clicked.connect(self.on_set_status)
+        apply_layout.addWidget(self.set_status_button)
+        
+        # Turn off button
+        self.turn_off_button = QPushButton("Turn Off")
+        self.turn_off_button.clicked.connect(self.light_controller.turn_off)
+        apply_layout.addWidget(self.turn_off_button)
+        
+        # Refresh connection button
+        self.refresh_connection_button = QPushButton("Refresh Connection")
+        self.refresh_connection_button.clicked.connect(self.manually_connect_device)
+        apply_layout.addWidget(self.refresh_connection_button)
+        
+        status_layout.addLayout(apply_layout)
+        status_group.setLayout(status_layout)
+        layout.addWidget(status_group)
+        
+        # Log section
         log_group = QGroupBox("Log")
-        log_layout = QVBoxLayout(log_group)
-        
+        log_layout = QVBoxLayout()
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         log_layout.addWidget(self.log_text)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
         
-        # Add everything to main layout
-        main_layout.addWidget(status_group)
-        main_layout.addWidget(control_group)
-        main_layout.addWidget(log_group)
+        main_widget.setLayout(layout)
+        self.setCentralWidget(main_widget)
         
-        self.setCentralWidget(central_widget)
+        # Set fixed size
+        self.resize(600, 500)
+        
+        # Set up connections
+        self.light_controller.log_message.connect(self.add_log)
+        self.light_controller.color_changed.connect(self.update_status_display)
+        self.light_controller.device_status_changed.connect(self.update_device_status)
     
     def setup_tray(self):
         # Create system tray icon
@@ -734,6 +880,25 @@ class BusylightApp(QMainWindow):
         """Create and update the tray icon based on current status"""
         if status not in self.light_controller.COLOR_MAP:
             status = 'normal'
+        
+        # Handle blinking effect
+        if self.light_controller.current_effect == 'blink' and status != 'off':
+            # Start tray blinking if not already blinking
+            if not self.tray_blink_timer.isActive():
+                self.tray_blink_timer.start(500)  # Blink every 500ms
+                
+            # If we're in the "off" phase of blinking, use black
+            if not self.tray_icon_visible:
+                # Create a blank icon
+                pixmap = QPixmap(22, 22)
+                pixmap.fill(QColor(0, 0, 0))
+                self.tray_icon.setIcon(QIcon(pixmap))
+                return
+        else:
+            # Stop tray blinking if it was active
+            if self.tray_blink_timer.isActive():
+                self.tray_blink_timer.stop()
+                self.tray_icon_visible = True
             
         # Create a colored icon
         pixmap = QPixmap(22, 22)
@@ -763,7 +928,7 @@ class BusylightApp(QMainWindow):
         self.redis_worker.moveToThread(self.worker_thread)
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
-        self.redis_worker.connection_status.connect(self.update_connection_status)
+        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
         self.worker_thread.started.connect(self.redis_worker.run)
         
         # Start the new worker
@@ -773,12 +938,45 @@ class BusylightApp(QMainWindow):
     def on_set_status(self):
         """Set the status of the light directly without confirmation"""
         selected_status = self.status_combo.currentData()
+        
+        # Get the selected effect
+        selected_effect = self.effect_combo.currentData()
+        self.light_controller.set_effect(selected_effect)
+        
+        # Get the selected ringtone and volume
+        selected_ringtone = self.ringtone_combo.currentData()
+        selected_volume = int(self.volume_combo.currentData())
+        self.light_controller.set_ringtone(selected_ringtone, selected_volume)
+        
+        # Set the light status
         self.light_controller.set_status(selected_status)
+    
+    def on_effect_changed(self):
+        """Handle effect dropdown change"""
+        # If the light is already on, apply the effect immediately
+        if self.light_controller.current_status != "off":
+            selected_effect = self.effect_combo.currentData()
+            self.light_controller.set_effect(selected_effect)
+    
+    def on_ringtone_changed(self):
+        """Handle ringtone dropdown change"""
+        selected_ringtone = self.ringtone_combo.currentData()
+        selected_volume = int(self.volume_combo.currentData())
+        
+        # Log what we're doing
+        if selected_ringtone == "off":
+            self.add_log(f"[{get_timestamp()}] Turning off ringtone")
+        else:
+            self.add_log(f"[{get_timestamp()}] Setting ringtone to {selected_ringtone} with volume {selected_volume}")
+        
+        # Set the ringtone - it will only be applied immediately in certain cases
+        self.light_controller.set_ringtone(selected_ringtone, selected_volume, log_action=False)
     
     def on_tray_status_changed(self):
         action = self.sender()
         if action:
             status = action.data()
+            # Use the current effect and ringtone settings when changing from tray
             self.light_controller.set_status(status)
     
     def update_status_display(self, status):
@@ -795,15 +993,13 @@ class BusylightApp(QMainWindow):
         # Update the tray icon
         self.update_tray_icon(status)
     
-    def update_connection_status(self, status):
-        if status == "connected":
-            self.connection_label.setText("Connection: Connected")
-            self.connection_label.setStyleSheet("color: green;")
-        else:
-            self.connection_label.setText("Connection: Disconnected")
-            self.connection_label.setStyleSheet("color: red;")
-    
     def add_log(self, message):
+        """Add a message to the log if the UI has been created"""
+        if not hasattr(self, 'log_text') or self.log_text is None:
+            # Just print to console if the UI hasn't been created yet
+            print(message)
+            return
+            
         self.log_text.append(message)
         # Auto scroll to bottom
         scrollbar = self.log_text.verticalScrollBar()
@@ -815,6 +1011,11 @@ class BusylightApp(QMainWindow):
             # Log exit attempt
             print(f"[{get_timestamp()}] Application exit initiated")
             
+            # Stop the tray blink timer if it's running
+            if hasattr(self, 'tray_blink_timer') and self.tray_blink_timer.isActive():
+                self.tray_blink_timer.stop()
+                print(f"[{get_timestamp()}] Stopped tray blink timer")
+                
             # Stop the reconnect timer if it's running
             if self.light_controller and hasattr(self.light_controller, 'reconnect_timer') and self.light_controller.reconnect_timer.isActive():
                 self.light_controller.reconnect_timer.stop()
@@ -883,23 +1084,32 @@ class BusylightApp(QMainWindow):
 
     def update_device_status(self, connected, device_name):
         """Update the device status display"""
-        self.device_label = getattr(self, 'device_label', None)
-        if not self.device_label:
+        # Ensure the device_label exists
+        if not hasattr(self, 'device_label') or not self.device_label:
             return
             
         if connected:
             self.device_label.setText(f"Device: {device_name}")
             self.device_label.setStyleSheet("color: green;")
+            self.add_log(f"[{get_timestamp()}] Connected to device: {device_name}")
         else:
             if self.light_controller.simulation_mode:
                 self.device_label.setText("Device: Simulation Mode")
                 self.device_label.setStyleSheet("color: orange;")
+                self.add_log(f"[{get_timestamp()}] Running in simulation mode")
             else:
                 self.device_label.setText("Device: Disconnected")
                 self.device_label.setStyleSheet("color: red;")
+                self.add_log(f"[{get_timestamp()}] Device disconnected")
 
     def manually_connect_device(self):
         """Manually attempt to connect to the device with user feedback"""
+        # Check if the UI has been created already
+        if not hasattr(self, 'device_label') or self.device_label is None:
+            # Just attempt connection without UI feedback
+            self.light_controller.try_connect_device()
+            return
+            
         # Show a temporary message
         original_text = self.device_label.text()
         original_style = self.device_label.styleSheet()
@@ -953,6 +1163,18 @@ class BusylightApp(QMainWindow):
         # Only act on double click or trigger click (varies by platform)
         if reason == QSystemTrayIcon.DoubleClick or reason == QSystemTrayIcon.Trigger:
             self.show_and_raise()
+
+    def update_redis_connection_status(self, status):
+        """Update the Redis connection status in the log"""
+        if status == "connected":
+            self.add_log(f"[{get_timestamp()}] Redis connected")
+        else:
+            self.add_log(f"[{get_timestamp()}] Redis disconnected")
+
+    def toggle_tray_icon(self):
+        """Toggle the tray icon visibility"""
+        self.tray_icon_visible = not self.tray_icon_visible
+        self.update_tray_icon(self.light_controller.current_status)
 
 # Main application
 def main():
