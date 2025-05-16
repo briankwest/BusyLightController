@@ -423,10 +423,10 @@ class LightController(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_connect_device)
         
-        # Initialize state maintenance timer to refresh the light state every 5 seconds
+        # Initialize state maintenance timer to refresh the light state every 30 seconds
         self.state_maintenance_timer = QTimer(self)
         self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
-        self.state_maintenance_timer.start(5000)  # 5 second interval
+        self.state_maintenance_timer.start(30000)  # 30 second interval
         
         # Initial connection attempt
         self.try_connect_device()
@@ -438,14 +438,58 @@ class LightController(QObject):
                 # Get current color to check connection
                 _ = self.light.color
                 
-                # Reapply the current status to maintain state
-                self.set_status(self.current_status)
+                # Reapply the current status to maintain state, but without logging
+                self._silent_set_status(self.current_status)
                 
             except Exception:
                 # Light may be disconnected, try to reconnect
                 self.light = None
                 self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
                 self.try_connect_device()
+    
+    def _silent_set_status(self, status):
+        """Set the status without logging - used for state maintenance"""
+        if not self.light and not self.simulation_mode:
+            return
+            
+        if status not in self.COLOR_MAP:
+            status = 'normal'
+            
+        # Just set the status without emitting anything
+        self.current_status = status
+        color = self.COLOR_MAP[status]
+        
+        # If in simulation mode, just update the UI (silently)
+        if self.simulation_mode:
+            return
+        
+        # Defaults
+        ringtone = Ring.Off
+        volume = 0
+        
+        # Special case for alert status
+        if status == 'alert':
+            ringtone = Ring.OpenOffice
+            volume = 7
+        
+        try:
+            cmd_buffer = CommandBuffer()
+
+            # Create and send the instructions to the light
+            instruction = Instruction.Jump(
+                ringtone=ringtone,
+                volume=volume,
+                update=1,
+            )
+
+            cmd_buffer.line0 = instruction.value
+            command_bytes = bytes(cmd_buffer)
+
+            self.light.write_strategy(command_bytes)
+            self.light.on(color)
+            self.light.update()
+        except Exception as e:
+            self.log_message.emit(f"[{get_timestamp()}] Error controlling light during refresh: {e}")
     
     def try_connect_device(self):
         """Try to connect to the Busylight device"""
@@ -517,6 +561,8 @@ class LightController(QObject):
                 self.log_message.emit(f"[{get_timestamp()}] Will try to reconnect every 10 seconds")
     
     def set_status(self, status):
+        """Set light status with full logging and UI updates.
+        For silent updates (like periodic refresh), use _silent_set_status instead."""
         if not self.light and not self.simulation_mode:
             self.log_message.emit(f"[{get_timestamp()}] No light device found and simulation mode is disabled")
             return
