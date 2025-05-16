@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QFileDialog, QMessageBox)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings
 from PySide6.QtGui import QIcon, QColor, QPixmap
+import subprocess
 
 # Busylight
 try:
@@ -43,7 +44,7 @@ class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Busylight Configuration")
-        self.resize(500, 300)
+        self.resize(600, 500)  # Increased height for the new options
         
         # Load settings
         self.settings = QSettings("Busylight", "BusylightController")
@@ -81,6 +82,56 @@ class ConfigDialog(QDialog):
         redis_layout.addRow("Redis Port:", self.redis_port_input)
         redis_layout.addRow("Redis Bearer Token:", token_layout)
         
+        # Text-to-Speech settings group
+        tts_group = QGroupBox("Text-to-Speech Settings")
+        tts_layout = QFormLayout(tts_group)
+        
+        self.tts_enabled_checkbox = QCheckBox()
+        self.tts_command_input = QLineEdit()
+        
+        # Create a layout for command input and test button
+        tts_cmd_layout = QHBoxLayout()
+        tts_cmd_layout.addWidget(self.tts_command_input)
+        
+        # Add test button
+        self.tts_test_button = QPushButton("Test")
+        self.tts_test_button.setToolTip("Test the TTS command")
+        self.tts_test_button.clicked.connect(self.test_tts_command)
+        tts_cmd_layout.addWidget(self.tts_test_button)
+        
+        tts_layout.addRow("Enable Text-to-Speech:", self.tts_enabled_checkbox)
+        tts_layout.addRow("Command Template:", tts_cmd_layout)
+        
+        # Add help text
+        tts_help = QLabel("Use {summary} as a placeholder for the ticket summary")
+        tts_help.setStyleSheet("color: gray; font-style: italic;")
+        tts_layout.addRow("", tts_help)
+        
+        # URL Handler settings group
+        url_group = QGroupBox("URL Handler Settings")
+        url_layout = QFormLayout(url_group)
+        
+        self.url_enabled_checkbox = QCheckBox()
+        self.url_command_input = QLineEdit()
+        
+        # Create a layout for command input and test button
+        url_cmd_layout = QHBoxLayout()
+        url_cmd_layout.addWidget(self.url_command_input)
+        
+        # Add test button
+        self.url_test_button = QPushButton("Test")
+        self.url_test_button.setToolTip("Test the URL command")
+        self.url_test_button.clicked.connect(self.test_url_command)
+        url_cmd_layout.addWidget(self.url_test_button)
+        
+        url_layout.addRow("Open URLs:", self.url_enabled_checkbox)
+        url_layout.addRow("Command Template:", url_cmd_layout)
+        
+        # Add help text
+        url_help = QLabel("Use {url} as a placeholder for the ticket URL")
+        url_help.setStyleSheet("color: gray; font-style: italic;")
+        url_layout.addRow("", url_help)
+        
         # General settings group
         general_group = QGroupBox("Application Settings")
         general_layout = QFormLayout(general_group)
@@ -109,6 +160,8 @@ class ConfigDialog(QDialog):
         
         # Add to layout
         layout.addWidget(redis_group)
+        layout.addWidget(tts_group)
+        layout.addWidget(url_group)
         layout.addWidget(general_group)
         layout.addWidget(test_button)
         layout.addWidget(self.test_status_label)
@@ -125,16 +178,54 @@ class ConfigDialog(QDialog):
             token = os.getenv('REDIS_BEARER_TOKEN')
         self.redis_token_input.setText(token)
         
+        # Load text-to-speech settings
+        default_tts_cmd = self.get_default_tts_command()
+        self.tts_enabled_checkbox.setChecked(self.settings.value("tts/enabled", False, type=bool))
+        self.tts_command_input.setText(self.settings.value("tts/command_template", default_tts_cmd))
+        
+        # Load URL handler settings
+        default_url_cmd = self.get_default_url_command()
+        self.url_enabled_checkbox.setChecked(self.settings.value("url/enabled", False, type=bool))
+        self.url_command_input.setText(self.settings.value("url/command_template", default_url_cmd))
+        
         # Load app settings
         self.start_minimized_checkbox.setChecked(self.settings.value("app/start_minimized", False, type=bool))
         self.autostart_checkbox.setChecked(self.settings.value("app/autostart", False, type=bool))
         self.simulation_mode_checkbox.setChecked(self.settings.value("app/simulation_mode", True, type=bool))
-        
+    
+    def get_default_tts_command(self):
+        """Get the default text-to-speech command for the current platform"""
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            return 'say "{summary}"'
+        elif system == "Windows":
+            return 'powershell -command "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{summary}\')"'
+        else:  # Linux or other
+            return 'echo "{summary}" | festival --tts'  # Basic fallback
+    
+    def get_default_url_command(self):
+        """Get the default URL opening command for the current platform"""
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            return 'open "{url}"'
+        elif system == "Windows":
+            return 'start "" "{url}"'
+        else:  # Linux or other
+            return 'xdg-open "{url}"'
+            
     def save_settings(self):
         # Save Redis settings
         self.settings.setValue("redis/host", self.redis_host_input.text())
         self.settings.setValue("redis/port", self.redis_port_input.text())
         self.settings.setValue("redis/token", self.redis_token_input.text())
+        
+        # Save text-to-speech settings
+        self.settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
+        self.settings.setValue("tts/command_template", self.tts_command_input.text())
+        
+        # Save URL handler settings
+        self.settings.setValue("url/enabled", self.url_enabled_checkbox.isChecked())
+        self.settings.setValue("url/command_template", self.url_command_input.text())
         
         # Save app settings
         self.settings.setValue("app/start_minimized", self.start_minimized_checkbox.isChecked())
@@ -158,7 +249,53 @@ class ConfigDialog(QDialog):
         else:
             print("Setting to Password mode")
             self.redis_token_input.setEchoMode(QLineEdit.Password)
+    
+    def test_tts_command(self):
+        """Test the configured TTS command"""
+        command = self.tts_command_input.text()
+        if not command:
+            self.test_status_label.setText("Error: No TTS command specified")
+            self.test_status_label.setStyleSheet("color: red;")
+            return
             
+        # Replace placeholder with a test message
+        command = command.replace("{summary}", "This is a test of the text to speech system")
+        
+        try:
+            # Run the command
+            subprocess.Popen(command, shell=True)
+            self.test_status_label.setText("TTS test command sent")
+            self.test_status_label.setStyleSheet("color: green;")
+        except Exception as e:
+            self.test_status_label.setText(f"Error running TTS command: {e}")
+            self.test_status_label.setStyleSheet("color: red;")
+            
+        # Clear the message after a delay
+        QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
+    
+    def test_url_command(self):
+        """Test the configured URL command"""
+        command = self.url_command_input.text()
+        if not command:
+            self.test_status_label.setText("Error: No URL command specified")
+            self.test_status_label.setStyleSheet("color: red;")
+            return
+            
+        # Replace placeholder with a test URL
+        command = command.replace("{url}", "https://www.signalwire.com")
+        
+        try:
+            # Run the command
+            subprocess.Popen(command, shell=True)
+            self.test_status_label.setText("URL test command sent")
+            self.test_status_label.setStyleSheet("color: green;")
+        except Exception as e:
+            self.test_status_label.setText(f"Error running URL command: {e}")
+            self.test_status_label.setStyleSheet("color: red;")
+            
+        # Clear the message after a delay
+        QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
+    
     def setup_autostart(self, enable):
         """Setup application to run at system startup"""
         # Implementation differs based on operating system
@@ -282,6 +419,7 @@ class RedisWorker(QObject):
     status_updated = pyqtSignal(str)
     connection_status = pyqtSignal(str)
     log_message = pyqtSignal(str)
+    ticket_received = pyqtSignal(dict)  # New signal for ticket information
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -299,7 +437,7 @@ class RedisWorker(QObject):
         self.redis_bearer_token = settings.value("redis/token", "")
         if not self.redis_bearer_token:
             self.redis_bearer_token = os.getenv('REDIS_BEARER_TOKEN')
-        
+            
     def connect_to_redis(self):
         if not self.redis_bearer_token:
             self.log_message.emit(f"[{get_timestamp()}] Error: Redis Bearer Token is not set")
@@ -350,6 +488,9 @@ class RedisWorker(QObject):
                 self.log_message.emit(f"[{get_timestamp()}] Last message: {data}")
                 status = data['status']
                 self.status_updated.emit(status)
+                
+                # Process ticket information if available
+                self.process_ticket_info(data)
             else:
                 self.status_updated.emit('normal')
         except Exception as e:
@@ -370,12 +511,30 @@ class RedisWorker(QObject):
                     self.log_message.emit(f"[{get_timestamp()}] Received: {data}")
                     status = data.get('status', 'error')
                     self.status_updated.emit(status)
+                    
+                    # Process ticket information if available
+                    self.process_ticket_info(data)
                 except Exception as e:
                     self.log_message.emit(f"[{get_timestamp()}] Error processing message: {e}")
                     self.status_updated.emit('error')
             
             # Small sleep to prevent CPU hogging
             QThread.msleep(100)
+    
+    def process_ticket_info(self, data):
+        """Extract and process ticket information from a message"""
+        # Check if this is a ticket message with required fields
+        if 'ticket' in data and 'status' in data:
+            ticket_info = {
+                'ticket': data.get('ticket', ''),
+                'summary': data.get('summary', ''),
+                'url': data.get('url', '')
+            }
+            
+            # Emit the ticket info for the main app to handle
+            if ticket_info['ticket']:
+                self.log_message.emit(f"[{get_timestamp()}] Ticket information received: #{ticket_info['ticket']}")
+                self.ticket_received.emit(ticket_info)
             
     def stop(self):
         self.is_running = False
@@ -729,6 +888,7 @@ class BusylightApp(QMainWindow):
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
         self.redis_worker.connection_status.connect(self.update_redis_connection_status)
         self.redis_worker.log_message.connect(self.add_log)
+        self.redis_worker.ticket_received.connect(self.process_ticket_info)
         self.worker_thread.started.connect(self.redis_worker.run)
         self.worker_thread.start()
         
@@ -941,6 +1101,7 @@ class BusylightApp(QMainWindow):
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
         self.redis_worker.connection_status.connect(self.update_redis_connection_status)
+        self.redis_worker.ticket_received.connect(self.process_ticket_info)
         self.worker_thread.started.connect(self.redis_worker.run)
         
         # Start the new worker
@@ -1235,6 +1396,77 @@ class BusylightApp(QMainWindow):
         """Toggle the tray icon visibility"""
         self.tray_icon_visible = not self.tray_icon_visible
         self.update_tray_icon(self.light_controller.current_status)
+
+    def process_ticket_info(self, ticket_info):
+        """Process ticket information received from Redis"""
+        # Log the ticket information
+        ticket_id = ticket_info.get('ticket', 'Unknown')
+        summary = ticket_info.get('summary', '')
+        url = ticket_info.get('url', '')
+        
+        self.add_log(f"[{get_timestamp()}] Ticket #{ticket_id} received")
+        
+        if summary:
+            self.add_log(f"[{get_timestamp()}] Summary: {summary}")
+            # Handle text-to-speech if enabled
+            self.speak_ticket_summary(summary)
+            
+        if url:
+            self.add_log(f"[{get_timestamp()}] URL: {url}")
+            # Handle URL opening if enabled
+            self.open_ticket_url(url)
+    
+    def speak_ticket_summary(self, summary):
+        """Speak the ticket summary using the configured command"""
+        # Load TTS settings
+        settings = QSettings("Busylight", "BusylightController")
+        tts_enabled = settings.value("tts/enabled", False, type=bool)
+        
+        if not tts_enabled:
+            return
+            
+        # Get the command template
+        tts_cmd_template = settings.value("tts/command_template", "")
+        if not tts_cmd_template:
+            self.add_log(f"[{get_timestamp()}] Warning: TTS enabled but no command template configured")
+            return
+            
+        # Replace the placeholder with the actual summary
+        # Sanitize the summary by escaping quotes
+        sanitized_summary = summary.replace('"', '\\"').replace("'", "\\'")
+        command = tts_cmd_template.replace("{summary}", sanitized_summary)
+        
+        try:
+            # Run the command in a background process
+            subprocess.Popen(command, shell=True)
+            self.add_log(f"[{get_timestamp()}] Speaking ticket summary")
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error executing TTS command: {e}")
+    
+    def open_ticket_url(self, url):
+        """Open the ticket URL using the configured command"""
+        # Load URL settings
+        settings = QSettings("Busylight", "BusylightController")
+        url_enabled = settings.value("url/enabled", False, type=bool)
+        
+        if not url_enabled:
+            return
+            
+        # Get the command template
+        url_cmd_template = settings.value("url/command_template", "")
+        if not url_cmd_template:
+            self.add_log(f"[{get_timestamp()}] Warning: URL opening enabled but no command template configured")
+            return
+            
+        # Replace the placeholder with the actual URL
+        command = url_cmd_template.replace("{url}", url)
+        
+        try:
+            # Run the command in a background process
+            subprocess.Popen(command, shell=True)
+            self.add_log(f"[{get_timestamp()}] Opening ticket URL")
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error executing URL command: {e}")
 
 # Main application
 def main():
