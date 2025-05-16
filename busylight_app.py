@@ -426,7 +426,7 @@ class LightController(QObject):
         # Initialize state maintenance timer to refresh the light state every 30 seconds
         self.state_maintenance_timer = QTimer(self)
         self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
-        self.state_maintenance_timer.start(30000)  # 30 second interval
+        self.state_maintenance_timer.start(20000)  # 20 second interval
         
         # Initial connection attempt
         self.try_connect_device()
