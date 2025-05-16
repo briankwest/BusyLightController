@@ -439,57 +439,13 @@ class LightController(QObject):
                 _ = self.light.color
                 
                 # Reapply the current status to maintain state, but without logging
-                self._silent_set_status(self.current_status)
+                self.set_status(self.current_status, log_action=False)
                 
             except Exception:
                 # Light may be disconnected, try to reconnect
                 self.light = None
                 self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
                 self.try_connect_device()
-    
-    def _silent_set_status(self, status):
-        """Set the status without logging - used for state maintenance"""
-        if not self.light and not self.simulation_mode:
-            return
-            
-        if status not in self.COLOR_MAP:
-            status = 'normal'
-            
-        # Just set the status without emitting anything
-        self.current_status = status
-        color = self.COLOR_MAP[status]
-        
-        # If in simulation mode, just update the UI (silently)
-        if self.simulation_mode:
-            return
-        
-        # Defaults
-        ringtone = Ring.Off
-        volume = 0
-        
-        # Special case for alert status
-        if status == 'alert':
-            ringtone = Ring.OpenOffice
-            volume = 7
-        
-        try:
-            cmd_buffer = CommandBuffer()
-
-            # Create and send the instructions to the light
-            instruction = Instruction.Jump(
-                ringtone=ringtone,
-                volume=volume,
-                update=1,
-            )
-
-            cmd_buffer.line0 = instruction.value
-            command_bytes = bytes(cmd_buffer)
-
-            self.light.write_strategy(command_bytes)
-            self.light.on(color)
-            self.light.update()
-        except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error controlling light during refresh: {e}")
     
     def try_connect_device(self):
         """Try to connect to the Busylight device"""
@@ -560,11 +516,11 @@ class LightController(QObject):
                 self.reconnect_timer.start(10000)  # Try every 10 seconds
                 self.log_message.emit(f"[{get_timestamp()}] Will try to reconnect every 10 seconds")
     
-    def set_status(self, status):
-        """Set light status with full logging and UI updates.
-        For silent updates (like periodic refresh), use _silent_set_status instead."""
+    def set_status(self, status, log_action=True):
+        """Set light status with optional logging and UI updates."""
         if not self.light and not self.simulation_mode:
-            self.log_message.emit(f"[{get_timestamp()}] No light device found and simulation mode is disabled")
+            if log_action:
+                self.log_message.emit(f"[{get_timestamp()}] No light device found and simulation mode is disabled")
             return
             
         if status not in self.COLOR_MAP:
@@ -573,8 +529,11 @@ class LightController(QObject):
         self.current_status = status
         color = self.COLOR_MAP[status]
         
-        self.log_message.emit(f"[{get_timestamp()}] Changing light to {self.COLOR_NAMES[status]}")
+        # Always emit color changed signal for UI updates, but only log if requested
         self.color_changed.emit(status)
+        
+        if log_action:
+            self.log_message.emit(f"[{get_timestamp()}] Changing light to {self.COLOR_NAMES[status]}")
         
         # If in simulation mode, just update the UI
         if self.simulation_mode:
@@ -606,7 +565,8 @@ class LightController(QObject):
             self.light.on(color)
             self.light.update()
         except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error controlling light: {e}")
+            if log_action:
+                self.log_message.emit(f"[{get_timestamp()}] Error controlling light: {e}")
     
     def turn_off(self):
         self.set_status('off')
