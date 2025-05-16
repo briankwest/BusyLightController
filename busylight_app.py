@@ -287,6 +287,8 @@ class RedisWorker(QObject):
         super().__init__(parent)
         self.redis_client = None
         self.is_running = True
+        self.queue_name = "event_queue"  # Queue name as a property
+        self.channel_name = "event_channel" # Channel name as a property
         
         # Load settings
         settings = QSettings("Busylight", "BusylightController")
@@ -340,12 +342,9 @@ class RedisWorker(QObject):
         if not self.connect_to_redis():
             return
             
-        queue_name = "event_queue"  # historical state of the queue
-        queue_channel = "event_channel"  # real time events channel
-
         # Get the most recent status from redis on startup
         try:
-            latest = self.redis_client.lindex(queue_name, -1)
+            latest = self.redis_client.lindex(self.queue_name, -1)
             if latest:
                 data = json.loads(latest)
                 self.log_message.emit(f"[{get_timestamp()}] Last message: {data}")
@@ -358,8 +357,8 @@ class RedisWorker(QObject):
         
         # Subscribe to the channel
         pubsub = self.redis_client.pubsub()
-        pubsub.subscribe(queue_channel)
-        self.log_message.emit(f"[{get_timestamp()}] Subscribed to {queue_channel}")
+        pubsub.subscribe(self.channel_name)
+        self.log_message.emit(f"[{get_timestamp()}] Subscribed to {self.channel_name}")
         self.log_message.emit(f"[{get_timestamp()}] Listening for messages...")
         
         # Listen for messages in a loop
@@ -651,18 +650,26 @@ class LightController(QObject):
     def set_effect(self, effect_name, log_action=True):
         """Set the current light effect"""
         if effect_name in self.EFFECTS:
+            # Skip if the effect isn't changing
+            if self.current_effect == effect_name:
+                return
+                
             # Stop any running effect timer if changing effects
-            if self.current_effect != effect_name and self.effect_timer and self.effect_timer.isActive():
+            if self.effect_timer and self.effect_timer.isActive():
                 self.effect_timer.stop()
                 
+            # Update the current effect
+            old_effect = self.current_effect
             self.current_effect = effect_name
             
             if log_action:
-                self.log_message.emit(f"[{get_timestamp()}] Setting effect to {self.EFFECTS[effect_name]}")
+                # Log that we're changing the effect
+                effect_name_display = self.EFFECTS[effect_name]
+                self.log_message.emit(f"[{get_timestamp()}] Changing effect from {self.EFFECTS.get(old_effect, 'None')} to {effect_name_display}")
                 
-            # Apply the effect with current status if not "none"
+            # Apply the effect with current status if not "none" and the light is on
             if effect_name != "none" and self.current_status != "off":
-                self.set_status(self.current_status, log_action)
+                self.set_status(self.current_status, log_action=False)
         else:
             self.log_message.emit(f"[{get_timestamp()}] Unknown effect: {effect_name}")
     
@@ -812,6 +819,11 @@ class BusylightApp(QMainWindow):
         self.refresh_connection_button.clicked.connect(self.manually_connect_device)
         apply_layout.addWidget(self.refresh_connection_button)
         
+        # Refresh status from Redis button
+        self.refresh_status_button = QPushButton("Refresh From Redis")
+        self.refresh_status_button.clicked.connect(self.refresh_status_from_redis)
+        apply_layout.addWidget(self.refresh_status_button)
+        
         status_layout.addLayout(apply_layout)
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
@@ -829,7 +841,7 @@ class BusylightApp(QMainWindow):
         self.setCentralWidget(main_widget)
         
         # Set fixed size
-        self.resize(600, 500)
+        self.resize(650, 500)
         
         # Set up connections
         self.light_controller.log_message.connect(self.add_log)
@@ -937,25 +949,40 @@ class BusylightApp(QMainWindow):
     
     def on_set_status(self):
         """Set the status of the light directly without confirmation"""
+        # Get current selections from UI
         selected_status = self.status_combo.currentData()
-        
-        # Get the selected effect
         selected_effect = self.effect_combo.currentData()
-        self.light_controller.set_effect(selected_effect)
-        
-        # Get the selected ringtone and volume
         selected_ringtone = self.ringtone_combo.currentData()
         selected_volume = int(self.volume_combo.currentData())
-        self.light_controller.set_ringtone(selected_ringtone, selected_volume)
         
-        # Set the light status
+        # Log what we're about to do
+        self.add_log(f"[{get_timestamp()}] Applying: Color={self.light_controller.COLOR_NAMES[selected_status]}, " +
+                    f"Effect={self.light_controller.EFFECTS[selected_effect]}, " +
+                    f"Ringtone={selected_ringtone.capitalize() if selected_ringtone != 'off' else 'Off'}, " +
+                    f"Volume={selected_volume}")
+        
+        # Set effect first (this will be applied when the status is set)
+        if selected_effect != self.light_controller.current_effect:
+            self.light_controller.set_effect(selected_effect, log_action=False)
+        
+        # Set ringtone next
+        if (selected_ringtone != self.light_controller.current_ringtone or 
+            selected_volume != self.light_controller.current_volume):
+            self.light_controller.set_ringtone(selected_ringtone, selected_volume, log_action=False)
+        
+        # Finally set status/color, which will apply everything
         self.light_controller.set_status(selected_status)
     
     def on_effect_changed(self):
         """Handle effect dropdown change"""
+        # Get the new selected effect
+        selected_effect = self.effect_combo.currentData()
+        
+        # Log the effect change
+        self.add_log(f"[{get_timestamp()}] Selected effect: {self.light_controller.EFFECTS.get(selected_effect, 'Unknown')}")
+        
         # If the light is already on, apply the effect immediately
         if self.light_controller.current_status != "off":
-            selected_effect = self.effect_combo.currentData()
             self.light_controller.set_effect(selected_effect)
     
     def on_ringtone_changed(self):
@@ -1139,6 +1166,9 @@ class BusylightApp(QMainWindow):
         # Try to connect
         self.light_controller.try_connect_device()
         
+        # After connecting, try to retrieve the last status from Redis
+        self.refresh_status_from_redis()
+        
         # If still not connected after the attempt, show a more obvious message
         if not self.light_controller.light and not self.light_controller.simulation_mode:
             self.device_label.setText("Device not found!")
@@ -1149,6 +1179,36 @@ class BusylightApp(QMainWindow):
                 False, 
                 "Simulation Mode" if self.light_controller.simulation_mode else ""
             ))
+            
+    def refresh_status_from_redis(self):
+        """Retrieve the last status from Redis and apply it"""
+        try:
+            # Check if Redis worker exists and is connected
+            if not hasattr(self, 'redis_worker') or not hasattr(self.redis_worker, 'redis_client') or self.redis_worker.redis_client is None:
+                self.add_log(f"[{get_timestamp()}] Cannot refresh from Redis: Redis not connected")
+                return
+                
+            # Get the queue name from the worker
+            queue_name = self.redis_worker.queue_name
+            
+            # Try to get the most recent status
+            latest = self.redis_worker.redis_client.lindex(queue_name, -1)
+            if latest:
+                try:
+                    data = json.loads(latest)
+                    status = data.get('status')
+                    if status:
+                        self.add_log(f"[{get_timestamp()}] Retrieved last status from Redis: {status}")
+                        # Apply the status
+                        self.light_controller.set_status(status)
+                    else:
+                        self.add_log(f"[{get_timestamp()}] Retrieved message from Redis but no status field found")
+                except Exception as e:
+                    self.add_log(f"[{get_timestamp()}] Error parsing Redis message: {e}")
+            else:
+                self.add_log(f"[{get_timestamp()}] No messages found in Redis queue")
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error retrieving status from Redis: {e}")
 
     def show_and_raise(self):
         """Show and raise the window to the top to make it visible"""
