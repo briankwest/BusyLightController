@@ -245,15 +245,6 @@ There is no spoon, only your choice. Take the red pill, and SignalWire L1ghtDuty
     wxs_file = os.path.join(wix_dir, "busylight.wxs")
     wxs_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-
-  <Fragment>
-    <SafeDirectoryRoots>
-      <DirectoryRoot Root="C:" />
-      <DirectoryRoot Root="D:" />
-      <DirectoryRoot Root="E:" />
-    </SafeDirectoryRoots>
-  </Fragment>
-
     <Product Id="{product_code}" 
              Name="{APP_NAME}" 
              Language="1033" 
