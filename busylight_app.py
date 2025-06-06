@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QLabel, QPushButton, QComboBox, QSystemTrayIcon, 
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
-                            QFileDialog, QMessageBox)
+                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings
 from PySide6.QtGui import QIcon, QColor, QPixmap
 import subprocess
@@ -326,9 +326,9 @@ class ConfigDialog(QDialog):
             
     def save_settings(self):
         # Save Redis settings
-        self.settings.setValue("redis/host", self.redis_host_input.text())
-        self.settings.setValue("redis/port", self.redis_port_input.text())
-        self.settings.setValue("redis/token", self.redis_token_input.text())
+        # self.settings.setValue("redis/host", self.redis_host_input.text())
+        # self.settings.setValue("redis/port", self.redis_port_input.text())
+        # self.settings.setValue("redis/token", self.redis_token_input.text())
         
         # Save text-to-speech settings
         self.settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
@@ -603,6 +603,7 @@ class RedisWorker(QObject):
     connection_status = pyqtSignal(str)
     log_message = pyqtSignal(str)
     ticket_received = pyqtSignal(dict)  # New signal for ticket information
+    group_status_updated = pyqtSignal(str, str, dict)  # group, status, full_data
     
     def __init__(self, redis_info, parent=None):
         super().__init__(parent)
@@ -611,7 +612,7 @@ class RedisWorker(QObject):
         
         # Use Redis info from login response
         if redis_info:
-            self.redis_host = f"{redis_info['host']}.signalwire.me"
+            self.redis_host = redis_info['host']  # Use host as-is from API
             self.redis_port = redis_info['port']
             self.redis_password = redis_info['password']  # Could be None
             self.groups = redis_info['groups']
@@ -624,13 +625,22 @@ class RedisWorker(QObject):
             
     def connect_to_redis(self):
         try:
+            # Log connection attempt details
+            self.log_message.emit(f"[{get_timestamp()}] Attempting Redis connection to {self.redis_host}:{self.redis_port}")
+            if self.redis_password:
+                self.log_message.emit(f"[{get_timestamp()}] Using password authentication (password length: {len(self.redis_password)})")
+            else:
+                self.log_message.emit(f"[{get_timestamp()}] No password authentication")
+            
             # Connect directly with provided credentials
             self.redis_client = redis.StrictRedis(
                 host=self.redis_host,
                 port=self.redis_port,
                 password=self.redis_password,  # Will be None if no auth required
                 db=0,
-                decode_responses=True            
+                decode_responses=True,
+                socket_timeout=10,
+                socket_connect_timeout=10
             )
             
             # Check if Redis connection is successful
@@ -640,6 +650,7 @@ class RedisWorker(QObject):
             return True
         except Exception as e:
             self.log_message.emit(f"[{get_timestamp()}] Redis connection error: {e}")
+            self.log_message.emit(f"[{get_timestamp()}] Connection details - Host: {self.redis_host}, Port: {self.redis_port}, Password: {'Yes' if self.redis_password else 'No'}")
             self.connection_status.emit("disconnected")
             return False
             
@@ -647,23 +658,72 @@ class RedisWorker(QObject):
         if not self.connect_to_redis():
             return
             
-        # Get the most recent status from redis on startup for each group
+        # Get the most recent status from event_queue for each group
         try:
+            latest_status = None
+            group_found_status = {}
+            
+            # Get all events from event_queue and find the most recent for each group
+            try:
+                # Get all items from the event_queue (most recent is at index -1)
+                queue_length = self.redis_client.llen("event_queue")
+                if queue_length > 0:
+                    self.log_message.emit(f"[{get_timestamp()}] Found {queue_length} events in event_queue")
+                    
+                    # Check events from most recent to oldest
+                    for i in range(queue_length):
+                        event_data = self.redis_client.lindex("event_queue", -(i+1))  # Start from most recent
+                        if event_data:
+                            try:
+                                data = json.loads(event_data)
+                                event_group = data.get('group')
+                                event_status = data.get('status')
+                                
+                                # If this group hasn't been found yet and this event belongs to one of our groups
+                                if event_group in self.groups and event_group not in group_found_status:
+                                    group_found_status[event_group] = {
+                                        'status': event_status,
+                                        'data': data
+                                    }
+                                    self.log_message.emit(f"[{get_timestamp()}] Found recent event for group '{event_group}': {event_status}")
+                                    
+                                    # Use first status found as overall status
+                                    if latest_status is None:
+                                        latest_status = event_status
+                                        
+                                # Stop if we've found status for all our groups
+                                if len(group_found_status) == len(self.groups):
+                                    break
+                                    
+                            except json.JSONDecodeError as e:
+                                self.log_message.emit(f"[{get_timestamp()}] Error parsing event data: {e}")
+                                continue
+                else:
+                    self.log_message.emit(f"[{get_timestamp()}] No events found in event_queue")
+                    
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error accessing event_queue: {e}")
+            
+            # Emit status for each group (found status or default to normal)
             for group in self.groups:
-                queue_name = f"{group}_channel"
-                latest = self.redis_client.lindex(queue_name, -1)
-                if latest:
-                    data = json.loads(latest)
-                    self.log_message.emit(f"[{get_timestamp()}] Last message from {group}: {data}")
-                    status = data.get('status')
-                    if status:
-                        self.status_updated.emit(status)
-                        # Process ticket information if available
-                        self.process_ticket_info(data)
-                        break  # Use the first status found
+                if group in group_found_status:
+                    # Found a recent event for this group
+                    status = group_found_status[group]['status']
+                    data = group_found_status[group]['data']
+                    self.group_status_updated.emit(group, status, data)
+                    self.process_ticket_info(data)
+                else:
+                    # No recent event found, default to normal
+                    self.log_message.emit(f"[{get_timestamp()}] No recent event found for group '{group}', defaulting to normal")
+                    default_data = {'group': group, 'status': 'normal'}
+                    self.group_status_updated.emit(group, 'normal', default_data)
+            
+            # Emit overall status
+            if latest_status:
+                self.status_updated.emit(latest_status)
             else:
-                # No messages found in any queue
                 self.status_updated.emit('normal')
+                
         except Exception as e:
             self.log_message.emit(f"[{get_timestamp()}] Error getting last message: {e}")
         
@@ -683,8 +743,16 @@ class RedisWorker(QObject):
                 try:
                     data = json.loads(message["data"])
                     channel = message["channel"]
+                    # Extract group name from channel (remove '_channel' suffix)
+                    group = channel.replace('_channel', '') if channel.endswith('_channel') else channel
+                    
                     self.log_message.emit(f"[{get_timestamp()}] Received from {channel}: {data}")
                     status = data.get('status', 'error')
+                    
+                    # Emit group-specific status
+                    self.group_status_updated.emit(group, status, data)
+                    
+                    # Emit overall status (for backward compatibility and light control)
                     self.status_updated.emit(status)
                     
                     # Process ticket information if available
@@ -797,6 +865,10 @@ class LightController(QObject):
         
         # Explicitly connect and emit initial device status
         QTimer.singleShot(0, self.try_connect_device)
+        
+        # Track group statuses
+        self.group_statuses = {}  # {group: {status, timestamp, data}}
+        self.group_widgets = {}   # {group: {widget, status_label, timestamp_label}}
     
     def refresh_light_state(self):
         """Refresh the light state to keep it active"""
@@ -1038,6 +1110,10 @@ class BusylightApp(QMainWindow):
         self.password = password
         self.redis_info = redis_info
         
+        # Track group statuses
+        self.group_statuses = {}  # {group: {status, timestamp, data}}
+        self.group_widgets = {}   # {group: {widget, status_label, timestamp_label}}
+        
         # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
         self.setWindowIcon(QIcon("icon.png"))
@@ -1069,6 +1145,7 @@ class BusylightApp(QMainWindow):
         self.redis_worker.connection_status.connect(self.update_redis_connection_status)
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.ticket_received.connect(self.process_ticket_info)
+        self.redis_worker.group_status_updated.connect(self.update_group_status)
         self.worker_thread.started.connect(self.redis_worker.run)
         self.worker_thread.start()
         
@@ -1076,109 +1153,89 @@ class BusylightApp(QMainWindow):
         QTimer.singleShot(100, self.manually_connect_device)
         
     def create_main_ui(self):
-        """Create the main UI components"""
+        """Create the main UI components with dynamic group status displays"""
         main_widget = QWidget()
         layout = QVBoxLayout()
         
-        # Status and control section
-        status_group = QGroupBox("Status")
-        status_layout = QVBoxLayout()
+        # User info section
+        user_group = QGroupBox("User Information")
+        user_layout = QVBoxLayout()
         
-        # Status indicator
-        self.status_label = QLabel("Status: Off")
-        self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        status_layout.addWidget(self.status_label)
-        
-        # User info
         if self.username:
             self.user_label = QLabel(f"Logged in as: {self.username}")
-            self.user_label.setStyleSheet("color: blue; font-style: italic;")
+            self.user_label.setStyleSheet("color: blue; font-style: italic; font-size: 14px;")
             self.user_label.setAlignment(Qt.AlignCenter)
-            status_layout.addWidget(self.user_label)
+            user_layout.addWidget(self.user_label)
         
         # Device info
         self.device_label = QLabel("Device: Disconnected")
         self.device_label.setStyleSheet("color: red;")
         self.device_label.setAlignment(Qt.AlignCenter)
-        status_layout.addWidget(self.device_label)
+        user_layout.addWidget(self.device_label)
         
-        # Control section
-        control_layout = QHBoxLayout()
+        # Redis connection info
+        self.redis_connection_label = QLabel("Redis: Disconnected")
+        self.redis_connection_label.setStyleSheet("color: red;")
+        self.redis_connection_label.setAlignment(Qt.AlignCenter)
+        user_layout.addWidget(self.redis_connection_label)
         
-        # Status selection dropdown
-        status_layout_left = QVBoxLayout()
-        status_layout_left.addWidget(QLabel("Status:"))
-        self.status_combo = QComboBox()
-        for status, name in self.light_controller.COLOR_NAMES.items():
-            self.status_combo.addItem(name, status)
-        status_layout_left.addWidget(self.status_combo)
+        user_group.setLayout(user_layout)
+        layout.addWidget(user_group)
         
-        # Effect selection dropdown
-        status_layout_left.addWidget(QLabel("Effect:"))
-        self.effect_combo = QComboBox()
-        for effect, name in self.light_controller.EFFECTS.items():
-            self.effect_combo.addItem(name, effect)
-        status_layout_left.addWidget(self.effect_combo)
-        self.effect_combo.currentIndexChanged.connect(self.on_effect_changed)
-        
-        control_layout.addLayout(status_layout_left)
-        
-        # Right side - ringtone controls
-        status_layout_right = QVBoxLayout()
-        status_layout_right.addWidget(QLabel("Ringtone:"))
-        self.ringtone_combo = QComboBox()
-        # Add Off option first
-        self.ringtone_combo.addItem("Off", "off")
-        # Add all other ringtones
-        for ringtone in self.light_controller.RINGTONES.keys():
-            if ringtone != "off":  # Skip 'off' as we already added it
-                self.ringtone_combo.addItem(ringtone.capitalize(), ringtone)
-        status_layout_right.addWidget(self.ringtone_combo)
-        self.ringtone_combo.currentIndexChanged.connect(self.on_ringtone_changed)
-        
-        # Volume control
-        status_layout_right.addWidget(QLabel("Volume:"))
-        self.volume_combo = QComboBox()
-        for i in range(11):  # 0-10 volume levels
-            self.volume_combo.addItem(f"{i}", i)
-        self.volume_combo.setCurrentIndex(5)  # Default to 5
-        status_layout_right.addWidget(self.volume_combo)
-        self.volume_combo.currentIndexChanged.connect(self.on_ringtone_changed)
-        
-        control_layout.addLayout(status_layout_right)
-        
-        status_layout.addLayout(control_layout)
-        
-        # Apply button
-        apply_layout = QHBoxLayout()
-        self.set_status_button = QPushButton("Apply")
-        self.set_status_button.clicked.connect(self.on_set_status)
-        apply_layout.addWidget(self.set_status_button)
-        
-        # Turn off button
-        self.turn_off_button = QPushButton("Turn Off")
-        self.turn_off_button.clicked.connect(self.light_controller.turn_off)
-        apply_layout.addWidget(self.turn_off_button)
-        
-        # Refresh connection button
-        self.refresh_connection_button = QPushButton("Refresh Connection")
-        self.refresh_connection_button.clicked.connect(self.manually_connect_device)
-        apply_layout.addWidget(self.refresh_connection_button)
-        
-        # Refresh status from Redis button
-        self.refresh_status_button = QPushButton("Refresh From Redis")
-        self.refresh_status_button.clicked.connect(self.refresh_status_from_redis)
-        apply_layout.addWidget(self.refresh_status_button)
-        
-        # Logout button
-        self.logout_button = QPushButton("Logout")
-        self.logout_button.clicked.connect(self.logout)
-        apply_layout.addWidget(self.logout_button)
-        
-        status_layout.addLayout(apply_layout)
-        status_group.setLayout(status_layout)
-        layout.addWidget(status_group)
+        # Dynamic Group Status Section
+        if self.redis_info and 'groups' in self.redis_info:
+            groups_group = QGroupBox("Group Status Monitor")
+            groups_layout = QVBoxLayout()
+            
+            # Create a scrollable area for groups
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_widget = QWidget()
+            scroll_layout = QVBoxLayout(scroll_widget)
+            
+            # Create status widget for each group
+            for group in self.redis_info['groups']:
+                group_widget = QGroupBox(f"Group: {group}")
+                group_layout = QVBoxLayout()
+                
+                # Status display
+                status_label = QLabel("Status: Unknown")
+                status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+                status_label.setAlignment(Qt.AlignCenter)
+                group_layout.addWidget(status_label)
+                
+                # Timestamp display
+                timestamp_label = QLabel("Last Update: Never")
+                timestamp_label.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+                timestamp_label.setAlignment(Qt.AlignCenter)
+                group_layout.addWidget(timestamp_label)
+                
+                group_widget.setLayout(group_layout)
+                scroll_layout.addWidget(group_widget)
+                
+                # Store references for updates
+                self.group_widgets[group] = {
+                    'widget': group_widget,
+                    'status_label': status_label,
+                    'timestamp_label': timestamp_label
+                }
+            
+            scroll_area.setWidget(scroll_widget)
+            groups_layout.addWidget(scroll_area)
+            groups_group.setLayout(groups_layout)
+            layout.addWidget(groups_group)
+        else:
+            # Fallback single status display if no groups
+            status_group = QGroupBox("Status")
+            status_layout = QVBoxLayout()
+            
+            self.status_label = QLabel("Status: Off")
+            self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+            self.status_label.setAlignment(Qt.AlignCenter)
+            status_layout.addWidget(self.status_label)
+            
+            status_group.setLayout(status_layout)
+            layout.addWidget(status_group)
         
         # Log section
         log_group = QGroupBox("Log")
@@ -1192,8 +1249,8 @@ class BusylightApp(QMainWindow):
         main_widget.setLayout(layout)
         self.setCentralWidget(main_widget)
         
-        # Set fixed size
-        self.resize(650, 500)
+        # Set window size
+        self.resize(700, 600)
         
         # Set up connections
         self.light_controller.log_message.connect(self.add_log)
@@ -1212,23 +1269,66 @@ class BusylightApp(QMainWindow):
         # Create context menu for the tray
         tray_menu = QMenu()
         
+        # Add Light Control submenu
+        light_control_menu = QMenu("Light Control", tray_menu)
+        
         # Add status submenu
-        status_menu = QMenu("Set Status", tray_menu)
+        status_menu = QMenu("Set Status", light_control_menu)
         for status, name in self.light_controller.COLOR_NAMES.items():
             action = status_menu.addAction(name)
             action.setData(status)
             action.triggered.connect(self.on_tray_status_changed)
+        light_control_menu.addMenu(status_menu)
         
-        tray_menu.addMenu(status_menu)
+        # Add effects submenu
+        effects_menu = QMenu("Set Effect", light_control_menu)
+        for effect, name in self.light_controller.EFFECTS.items():
+            action = effects_menu.addAction(name)
+            action.setData(effect)
+            action.triggered.connect(self.on_tray_effect_changed)
+        light_control_menu.addMenu(effects_menu)
+        
+        # Add ringtones submenu
+        ringtones_menu = QMenu("Set Ringtone", light_control_menu)
+        # Add Off option first
+        off_action = ringtones_menu.addAction("Off")
+        off_action.setData(("off", 0))
+        off_action.triggered.connect(self.on_tray_ringtone_changed)
+        
+        # Add separator
+        ringtones_menu.addSeparator()
+        
+        # Add other ringtones with volume levels
+        for ringtone in self.light_controller.RINGTONES.keys():
+            if ringtone != "off":
+                ringtone_submenu = QMenu(ringtone.capitalize(), ringtones_menu)
+                for volume in range(1, 11):  # Volume 1-10
+                    volume_action = ringtone_submenu.addAction(f"Volume {volume}")
+                    volume_action.setData((ringtone, volume))
+                    volume_action.triggered.connect(self.on_tray_ringtone_changed)
+                ringtones_menu.addMenu(ringtone_submenu)
+        light_control_menu.addMenu(ringtones_menu)
+        
+        # Add separator in light control menu
+        light_control_menu.addSeparator()
+        
+        # Add direct control actions
+        turn_off_action = light_control_menu.addAction("Turn Off")
+        turn_off_action.triggered.connect(self.light_controller.turn_off)
+        
+        refresh_connection_action = light_control_menu.addAction("Refresh Connection")
+        refresh_connection_action.triggered.connect(self.manually_connect_device)
+        
+        refresh_status_action = light_control_menu.addAction("Refresh From Redis")
+        refresh_status_action.triggered.connect(self.refresh_status_from_redis)
+        
+        # Add the Light Control menu to main tray menu
+        tray_menu.addMenu(light_control_menu)
         tray_menu.addSeparator()
         
         # Add config option
         config_action = tray_menu.addAction("Configuration")
         config_action.triggered.connect(self.show_config_dialog)
-        
-        # Add logout option
-        logout_action = tray_menu.addAction("Logout")
-        logout_action.triggered.connect(self.logout)
         
         # Add other actions
         show_action = tray_menu.addAction("Show")
@@ -1298,63 +1398,12 @@ class BusylightApp(QMainWindow):
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
         self.redis_worker.connection_status.connect(self.update_redis_connection_status)
         self.redis_worker.ticket_received.connect(self.process_ticket_info)
+        self.redis_worker.group_status_updated.connect(self.update_group_status)
         self.worker_thread.started.connect(self.redis_worker.run)
         
         # Start the new worker
         self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
         self.worker_thread.start()
-    
-    def on_set_status(self):
-        """Set the status of the light directly without confirmation"""
-        # Get current selections from UI
-        selected_status = self.status_combo.currentData()
-        selected_effect = self.effect_combo.currentData()
-        selected_ringtone = self.ringtone_combo.currentData()
-        selected_volume = int(self.volume_combo.currentData())
-        
-        # Log what we're about to do
-        self.add_log(f"[{get_timestamp()}] Applying: Color={self.light_controller.COLOR_NAMES[selected_status]}, " +
-                    f"Effect={self.light_controller.EFFECTS[selected_effect]}, " +
-                    f"Ringtone={selected_ringtone.capitalize() if selected_ringtone != 'off' else 'Off'}, " +
-                    f"Volume={selected_volume}")
-        
-        # Set effect first (this will be applied when the status is set)
-        if selected_effect != self.light_controller.current_effect:
-            self.light_controller.set_effect(selected_effect, log_action=False)
-        
-        # Set ringtone next
-        if (selected_ringtone != self.light_controller.current_ringtone or 
-            selected_volume != self.light_controller.current_volume):
-            self.light_controller.set_ringtone(selected_ringtone, selected_volume, log_action=False)
-        
-        # Finally set status/color, which will apply everything
-        self.light_controller.set_status(selected_status)
-    
-    def on_effect_changed(self):
-        """Handle effect dropdown change"""
-        # Get the new selected effect
-        selected_effect = self.effect_combo.currentData()
-        
-        # Log the effect change
-        self.add_log(f"[{get_timestamp()}] Selected effect: {self.light_controller.EFFECTS.get(selected_effect, 'Unknown')}")
-        
-        # If the light is already on, apply the effect immediately
-        if self.light_controller.current_status != "off":
-            self.light_controller.set_effect(selected_effect)
-    
-    def on_ringtone_changed(self):
-        """Handle ringtone dropdown change"""
-        selected_ringtone = self.ringtone_combo.currentData()
-        selected_volume = int(self.volume_combo.currentData())
-        
-        # Log what we're doing
-        if selected_ringtone == "off":
-            self.add_log(f"[{get_timestamp()}] Turning off ringtone")
-        else:
-            self.add_log(f"[{get_timestamp()}] Setting ringtone to {selected_ringtone} with volume {selected_volume}")
-        
-        # Set the ringtone - it will only be applied immediately in certain cases
-        self.light_controller.set_ringtone(selected_ringtone, selected_volume, log_action=False)
     
     def on_tray_status_changed(self):
         action = self.sender()
@@ -1363,17 +1412,28 @@ class BusylightApp(QMainWindow):
             # Use the current effect and ringtone settings when changing from tray
             self.light_controller.set_status(status)
     
+    def on_tray_effect_changed(self):
+        """Handle effect change from tray menu"""
+        action = self.sender()
+        if action:
+            effect = action.data()
+            self.light_controller.set_effect(effect)
+            self.add_log(f"[{get_timestamp()}] Effect changed from tray: {self.light_controller.EFFECTS.get(effect, 'Unknown')}")
+    
+    def on_tray_ringtone_changed(self):
+        """Handle ringtone change from tray menu"""
+        action = self.sender()
+        if action:
+            ringtone_data = action.data()
+            if isinstance(ringtone_data, tuple):
+                ringtone, volume = ringtone_data
+                self.light_controller.set_ringtone(ringtone, volume)
+                if ringtone == "off":
+                    self.add_log(f"[{get_timestamp()}] Ringtone turned off from tray")
+                else:
+                    self.add_log(f"[{get_timestamp()}] Ringtone changed from tray: {ringtone} volume {volume}")
+    
     def update_status_display(self, status):
-        self.status_label.setText(f"Status: {self.light_controller.COLOR_NAMES.get(status, 'Unknown')}")
-        
-        # Set the color of the status label background
-        if status in self.light_controller.COLOR_MAP:
-            r, g, b = self.light_controller.COLOR_MAP[status]
-            if status == 'off':
-                self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-            else:
-                self.status_label.setStyleSheet(f"font-size: 18px; font-weight: bold; background-color: rgb({r}, {g}, {b}); color: black;")
-        
         # Update the tray icon
         self.update_tray_icon(status)
     
@@ -1584,11 +1644,16 @@ class BusylightApp(QMainWindow):
             self.show_and_raise()
 
     def update_redis_connection_status(self, status):
-        """Update the Redis connection status in the log"""
-        if status == "connected":
-            self.add_log(f"[{get_timestamp()}] Redis connected")
-        else:
-            self.add_log(f"[{get_timestamp()}] Redis disconnected")
+        """Update the Redis connection status in the UI and log"""
+        if hasattr(self, 'redis_connection_label'):
+            if status == "connected":
+                self.redis_connection_label.setText("Connected")
+                self.redis_connection_label.setStyleSheet("color: green;")
+                self.add_log(f"[{get_timestamp()}] Redis connected")
+            else:
+                self.redis_connection_label.setText("Disconnected")
+                self.redis_connection_label.setStyleSheet("color: red;")
+                self.add_log(f"[{get_timestamp()}] Redis disconnected")
 
     def toggle_tray_icon(self):
         """Toggle the tray icon visibility"""
@@ -1677,23 +1742,45 @@ class BusylightApp(QMainWindow):
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error opening URL: {e}")
 
-    def logout(self):
-        """Handle logout option"""
-        # Show confirmation dialog
-        reply = QMessageBox.question(self, "Logout Confirmation", 
-                                   f"Are you sure you want to logout user '{self.username}'?",
-                                   QMessageBox.Yes | QMessageBox.No,
-                                   QMessageBox.No)
+    def update_group_status(self, group, status, data):
+        """Handle group status updates"""
+        self.group_statuses[group] = {
+            'status': status,
+            'timestamp': get_timestamp(),
+            'data': data
+        }
         
-        if reply == QMessageBox.Yes:
-            self.add_log(f"[{get_timestamp()}] User '{self.username}' logging out")
+        # Update the UI widget for this group
+        if group in self.group_widgets:
+            widgets = self.group_widgets[group]
+            status_label = widgets['status_label']
+            timestamp_label = widgets['timestamp_label']
             
-            # Clear credentials
-            self.username = None
-            self.password = None
+            # Update status text and color
+            status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
+            status_label.setText(f"Status: {status_name}")
             
-            # Exit the application
-            self.on_exit()
+            # Set background color based on status
+            if status in self.light_controller.COLOR_MAP:
+                r, g, b = self.light_controller.COLOR_MAP[status]
+                if status == 'off':
+                    status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+                else:
+                    status_label.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 5px; background-color: rgb({r}, {g}, {b}); color: black;")
+            
+            # Update timestamp
+            timestamp_label.setText(f"Last Update: {get_timestamp()}")
+            
+            # Log the update
+            self.add_log(f"[{get_timestamp()}] Group '{group}' status updated: {status_name}")
+            
+            # If there's ticket info, log it
+            if 'ticket' in data:
+                ticket_id = data.get('ticket', 'Unknown')
+                summary = data.get('summary', '')
+                self.add_log(f"[{get_timestamp()}] Group '{group}' ticket: #{ticket_id} - {summary}")
+        else:
+            self.add_log(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
 
 # Main application
 def main():
