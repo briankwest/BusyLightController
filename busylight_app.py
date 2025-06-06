@@ -613,6 +613,175 @@ class ConfigDialog(QDialog):
                 
         return True
 
+# Status change dialog class
+class StatusChangeDialog(QDialog):
+    def __init__(self, current_group=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Change Status")
+        self.setModal(True)
+        self.setFixedSize(400, 300)
+        
+        # Store the current group
+        self.current_group = current_group
+        
+        # Center the dialog on screen
+        self.center_on_screen()
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Store result data
+        self.result_data = None
+        
+    def center_on_screen(self):
+        """Center the dialog on the screen"""
+        screen = QApplication.primaryScreen().geometry()
+        dialog_geometry = self.geometry()
+        x = (screen.width() - dialog_geometry.width()) // 2
+        y = (screen.height() - dialog_geometry.height()) // 2
+        self.move(x, y)
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Title label
+        title_label = QLabel(f"Change {self.current_group} Status")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # Form layout for controls
+        form_layout = QFormLayout()
+        
+        # Actions dropdown
+        self.action_combo = QComboBox()
+        self.action_combo.addItem("Normal", "normal")
+        self.action_combo.addItem("Warning", "warning") 
+        self.action_combo.addItem("Acknowledged", "alert-acked")
+        self.action_combo.addItem("Alert", "alert")
+        form_layout.addRow("Action:", self.action_combo)
+        
+        # Reason text box
+        self.reason_input = QLineEdit()
+        self.reason_input.setPlaceholderText("Enter reason for status change...")
+        form_layout.addRow("Reason:", self.reason_input)
+        
+        # Group display (read-only, showing the clicked group)
+        self.group_label = QLabel(self.current_group if self.current_group else "Unknown")
+        self.group_label.setStyleSheet("font-weight: bold; color: blue; padding: 5px; border: 1px solid lightgray; border-radius: 3px; background-color: #f0f0f0;")
+        form_layout.addRow("Group:", self.group_label)
+        
+        layout.addLayout(form_layout)
+        
+        # Button box
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        submit_button = button_box.button(QDialogButtonBox.Ok)
+        submit_button.setText("Submit")
+        cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        cancel_button.setText("Cancel")
+        
+        button_box.accepted.connect(self.accept_change)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Set focus to reason input
+        self.reason_input.setFocus()
+        
+    def accept_change(self):
+        """Validate and accept the status change"""
+        action = self.action_combo.currentData()
+        reason = self.reason_input.text().strip()
+        group = self.current_group  # Use the current group instead of dropdown
+        
+        # Basic validation
+        if not reason:
+            QMessageBox.warning(self, "Validation Error", "Please enter a reason for the status change.")
+            self.reason_input.setFocus()
+            return
+        
+        # Store the result data
+        self.result_data = {
+            'action': action,
+            'reason': reason,
+            'group': group
+        }
+        
+        # Call API to submit the status change
+        self.submit_to_api(self.result_data)
+        
+        # Accept the dialog
+        self.accept()
+    
+    def submit_to_api(self, data):
+        """Submit the status change to the API"""
+        try:
+            # Get parent window to access credentials
+            parent_app = self.parent()
+            if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+                QMessageBox.warning(self, "API Error", "No authentication credentials available.")
+                return
+            
+            # Prepare API request
+            api_url = "https://busylight.signalwire.me/api/status"
+            
+            payload = {
+                'group': data['group'],
+                'status': data['action'],
+                'reason': data['reason'],
+                'timestamp': get_timestamp(),
+                'source': parent_app.username
+            }
+            
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            
+            # Make API call with authentication
+            response = requests.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                auth=(parent_app.username, parent_app.password),
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                # Success
+                if hasattr(parent_app, 'add_log'):
+                    parent_app.add_log(f"[{get_timestamp()}] API: Status change submitted successfully for group '{data['group']}'")
+            else:
+                # API error
+                error_msg = f"API Error: HTTP {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if 'error' in error_data:
+                        error_msg += f" - {error_data['error']}"
+                except:
+                    pass
+                
+                QMessageBox.warning(self, "API Error", f"Failed to submit status change:\n{error_msg}")
+                if hasattr(parent_app, 'add_log'):
+                    parent_app.add_log(f"[{get_timestamp()}] API Error: {error_msg}")
+                    
+        except requests.exceptions.Timeout:
+            QMessageBox.warning(self, "API Error", "Request timed out. Please try again.")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] API Error: Request timed out")
+                
+        except requests.exceptions.ConnectionError:
+            QMessageBox.warning(self, "API Error", "Could not connect to the API server.")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] API Error: Connection failed")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "API Error", f"Unexpected error: {str(e)}")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] API Error: {str(e)}")
+    
+    def get_result(self):
+        """Return the result data"""
+        return self.result_data
+
 # Worker class to handle redis operations in background
 class RedisWorker(QObject):
     status_updated = pyqtSignal(str)
@@ -1212,22 +1381,40 @@ class BusylightApp(QMainWindow):
             # Create status widget for each group
             for group in self.redis_info['groups']:
                 group_widget = QGroupBox(f"Group: {group}")
+                group_widget.setStyleSheet("QGroupBox { border: 2px solid gray; border-radius: 5px; margin: 5px; padding-top: 15px; } QGroupBox:hover { border-color: blue; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
                 group_layout = QVBoxLayout()
+                group_layout.setSpacing(8)  # Add spacing between elements
+                group_layout.setContentsMargins(10, 10, 10, 10)  # Add margins inside the group box
                 
                 # Status display
                 status_label = QLabel("Status: Unknown")
-                status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+                status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px;")
                 status_label.setAlignment(Qt.AlignCenter)
+                status_label.setMinimumHeight(35)  # Ensure minimum height for the status bar
                 group_layout.addWidget(status_label)
                 
                 # Timestamp display
                 timestamp_label = QLabel("Last Update: Never")
-                timestamp_label.setStyleSheet("color: gray; font-size: 10px; font-style: italic;")
+                timestamp_label.setStyleSheet("color: gray; font-size: 10px; font-style: italic; padding: 5px;")
                 timestamp_label.setAlignment(Qt.AlignCenter)
                 group_layout.addWidget(timestamp_label)
                 
                 group_widget.setLayout(group_layout)
                 scroll_layout.addWidget(group_widget)
+                
+                # Make the group widget clickable with tactile effect
+                def create_click_handler(group_name, widget):
+                    def mouse_press_event(event):
+                        # Add pressed effect
+                        widget.setStyleSheet("QGroupBox { border: 2px solid darkblue; border-radius: 5px; margin: 7px; padding-top: 15px; background-color: #e6f3ff; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+                        QApplication.processEvents()  # Force immediate update
+                        
+                        # Small delay for tactile effect
+                        QTimer.singleShot(100, lambda: self.complete_group_click(group_name, widget))
+                    
+                    return mouse_press_event
+                
+                group_widget.mousePressEvent = create_click_handler(group, group_widget)
                 
                 # Store references for updates
                 self.group_widgets[group] = {
@@ -1797,6 +1984,43 @@ class BusylightApp(QMainWindow):
                 self.add_log(f"[{get_timestamp()}] Group '{group}' ticket: #{ticket_id} - {summary}")
         else:
             self.add_log(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
+
+    def on_group_clicked(self, group):
+        """Handle group status widget click event"""
+        dialog = StatusChangeDialog(current_group=group, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result:
+                # Log the status change request
+                self.add_log(f"[{get_timestamp()}] Status change requested for group '{result['group']}': {result['action']} - {result['reason']}")
+                
+                # Here you could send the status change to Redis or your API
+                # For now, we'll just update the local display
+                self.simulate_status_change(result['group'], result['action'], result['reason'])
+    
+    def simulate_status_change(self, group, action, reason):
+        """Simulate a status change (replace with actual API call)"""
+        # Create mock data for the status change
+        mock_data = {
+            'group': group,
+            'status': action,
+            'reason': reason,
+            'timestamp': get_timestamp()
+        }
+        
+        # Update the group status display
+        self.update_group_status(group, action, mock_data)
+        
+        # Also update the light controller
+        self.light_controller.set_status(action, log_action=True)
+    
+    def complete_group_click(self, group, widget):
+        """Complete the group click with tactile effect"""
+        # Restore normal appearance
+        widget.setStyleSheet("QGroupBox { border: 2px solid gray; border-radius: 5px; margin: 5px; padding-top: 15px; } QGroupBox:hover { border-color: blue; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        
+        # Open the dialog
+        self.on_group_clicked(group)
 
 # Main application
 def main():
