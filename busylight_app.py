@@ -40,6 +40,143 @@ dotenv.load_dotenv()
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+# Login dialog class
+class LoginDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("B.L.A.S.S.T. - Login")
+        self.setModal(True)
+        self.setFixedSize(400, 280)
+        
+        # Center the dialog on screen
+        self.center_on_screen()
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Store credentials
+        self.username = ""
+        self.password = ""
+        
+    def center_on_screen(self):
+        """Center the dialog on the screen"""
+        screen = QApplication.primaryScreen().geometry()
+        dialog_geometry = self.geometry()
+        x = (screen.width() - dialog_geometry.width()) // 2
+        y = (screen.height() - dialog_geometry.height()) // 2
+        self.move(x, y)
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Title label
+        title_label = QLabel("Please enter your B.L.A.S.S.T. credentials")
+        title_label.setWordWrap(True)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # Form layout for credentials
+        form_layout = QFormLayout()
+        
+        # Username input
+        self.username_input = QLineEdit()
+        #self.username_input.setPlaceholderText("Enter your username")
+        form_layout.addRow("Username:", self.username_input)
+        
+        # Password input with show/hide button - create the layout first
+        password_layout = QHBoxLayout()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        #self.password_input.setPlaceholderText("Enter your password")
+        password_layout.addWidget(self.password_input)
+        
+        self.show_password_button = QPushButton("👁️")
+        self.show_password_button.setToolTip("Show/Hide Password")
+        self.show_password_button.setFixedWidth(30)
+        self.show_password_button.setCheckable(True)
+        self.show_password_button.clicked.connect(self.toggle_password_visibility)
+        password_layout.addWidget(self.show_password_button)
+        
+        # Add the password layout directly to the form
+        form_layout.addRow("Password:", password_layout)
+        
+        layout.addLayout(form_layout)
+                
+        # Button box
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept_login)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Set focus to username input
+        self.username_input.setFocus()
+        
+        # Allow Enter key to submit
+        self.username_input.returnPressed.connect(self.password_input.setFocus)
+        self.password_input.returnPressed.connect(self.accept_login)
+        
+    def toggle_password_visibility(self, checked):
+        """Toggle the visibility of the password input field"""
+        if checked:
+            self.password_input.setEchoMode(QLineEdit.Normal)
+        else:
+            self.password_input.setEchoMode(QLineEdit.Password)
+            
+    def accept_login(self):
+        """Validate and accept the login"""
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        
+        # Basic validation
+        if not username:
+            QMessageBox.warning(self, "Login Error", "Please enter a username.")
+            self.username_input.setFocus()
+            return
+            
+        if not password:
+            QMessageBox.warning(self, "Login Error", "Please enter a password.")
+            self.password_input.setFocus()
+            return
+        
+        # Authenticate credentials
+        if not self.authenticate(username, password):
+            QMessageBox.warning(self, "Login Error", "Invalid username or password.")
+            self.password_input.clear()
+            self.password_input.setFocus()
+            return
+        
+        # Store credentials
+        self.username = username
+        self.password = password
+        
+        # Accept the dialog
+        self.accept()
+        
+    def authenticate(self, username, password):
+        headers = {
+            "Content-Type": "application/json",
+        }
+
+        url = f"https://busylight.signalwire.me/api/status/redis-info"
+
+        response = requests.get(
+            url,
+            headers=headers,
+            auth=(username, password)
+        )
+
+        if response.status_code == 200:
+            print(response.json())
+            self.redis_info = response.json()  # Store the full response
+            return True
+        else:
+            return False
+        
+    def get_credentials(self):
+        """Return the entered credentials"""
+        return self.username, self.password, getattr(self, 'redis_info', None)
+
 # Configuration dialog class
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -56,33 +193,7 @@ class ConfigDialog(QDialog):
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        
-        # Redis settings group
-        redis_group = QGroupBox("Redis Connection Settings")
-        redis_layout = QFormLayout(redis_group)
-        
-        self.redis_host_input = QLineEdit()
-        self.redis_port_input = QLineEdit()
-        self.redis_token_input = QLineEdit()
-        
-        # Option to hide token
-        self.redis_token_input.setEchoMode(QLineEdit.Password)
-        
-        # Replace checkbox with a button
-        token_layout = QHBoxLayout()
-        token_layout.addWidget(self.redis_token_input)
-        
-        self.show_token_button = QPushButton("👁️")  # Eye emoji
-        self.show_token_button.setToolTip("Show/Hide Token")
-        self.show_token_button.setFixedWidth(30)
-        self.show_token_button.setCheckable(True)
-        self.show_token_button.clicked.connect(self.toggle_token_visibility)
-        token_layout.addWidget(self.show_token_button)
-        
-        redis_layout.addRow("Redis Host:", self.redis_host_input)
-        redis_layout.addRow("Redis Port:", self.redis_port_input)
-        redis_layout.addRow("Redis Bearer Token:", token_layout)
-        
+
         # Text-to-Speech settings group
         tts_group = QGroupBox("Text-to-Speech Settings")
         tts_layout = QFormLayout(tts_group)
@@ -160,7 +271,6 @@ class ConfigDialog(QDialog):
         button_box.rejected.connect(self.reject)
         
         # Add to layout
-        layout.addWidget(redis_group)
         layout.addWidget(tts_group)
         layout.addWidget(url_group)
         layout.addWidget(general_group)
@@ -169,15 +279,15 @@ class ConfigDialog(QDialog):
         layout.addWidget(button_box)
         
     def load_settings(self):
-        # Load and set values
-        self.redis_host_input.setText(self.settings.value("redis/host", "busylight.signalwire.me"))
-        self.redis_port_input.setText(self.settings.value("redis/port", "6379"))
+        # # Load and set values
+        # self.redis_host_input.setText(self.settings.value("redis/host", "busylight.signalwire.me"))
+        # self.redis_port_input.setText(self.settings.value("redis/port", "6379"))
         
-        # Load token from settings or environment
-        token = self.settings.value("redis/token", "")
-        if not token and os.getenv('REDIS_BEARER_TOKEN'):
-            token = os.getenv('REDIS_BEARER_TOKEN')
-        self.redis_token_input.setText(token)
+        # # Load token from settings or environment
+        # token = self.settings.value("redis/token", "")
+        # if not token and os.getenv('REDIS_BEARER_TOKEN'):
+        #     token = os.getenv('REDIS_BEARER_TOKEN')
+        # self.redis_token_input.setText(token)
         
         # Load text-to-speech settings
         default_tts_cmd = self.get_default_tts_command()
@@ -250,7 +360,7 @@ class ConfigDialog(QDialog):
         else:
             print("Setting to Password mode")
             self.redis_token_input.setEchoMode(QLineEdit.Password)
-    
+
     def test_tts_command(self):
         """Test the text-to-speech functionality securely"""
         try:
@@ -494,42 +604,38 @@ class RedisWorker(QObject):
     log_message = pyqtSignal(str)
     ticket_received = pyqtSignal(dict)  # New signal for ticket information
     
-    def __init__(self, parent=None):
+    def __init__(self, redis_info, parent=None):
         super().__init__(parent)
         self.redis_client = None
         self.is_running = True
-        self.queue_name = "event_queue"  # Queue name as a property
-        self.channel_name = "event_channel" # Channel name as a property
         
-        # Load settings
-        settings = QSettings("Busylight", "BusylightController")
-        self.redis_host = settings.value("redis/host", "busylight.signalwire.me")
-        self.redis_port = int(settings.value("redis/port", 6379))
-        
-        # Get token from settings or environment
-        self.redis_bearer_token = settings.value("redis/token", "")
-        if not self.redis_bearer_token:
-            self.redis_bearer_token = os.getenv('REDIS_BEARER_TOKEN')
+        # Use Redis info from login response
+        if redis_info:
+            self.redis_host = f"{redis_info['host']}.signalwire.me"
+            self.redis_port = redis_info['port']
+            self.redis_password = redis_info['password']  # Could be None
+            self.groups = redis_info['groups']
+        else:
+            # Fallback to default values if no redis_info provided
+            self.redis_host = "localhost"
+            self.redis_port = 6379
+            self.redis_password = None
+            self.groups = ["default"]
             
     def connect_to_redis(self):
-        if not self.redis_bearer_token:
-            self.log_message.emit(f"[{get_timestamp()}] Error: Redis Bearer Token is not set")
-            self.connection_status.emit("disconnected")
-            return False
-            
         try:
-            redis_password = self.get_redis_password()
+            # Connect directly with provided credentials
             self.redis_client = redis.StrictRedis(
                 host=self.redis_host,
                 port=self.redis_port,
-                password=redis_password,
+                password=self.redis_password,  # Will be None if no auth required
                 db=0,
                 decode_responses=True            
             )
             
             # Check if Redis connection is successful
             self.redis_client.ping()
-            self.log_message.emit(f"[{get_timestamp()}] Connected to Redis successfully")
+            self.log_message.emit(f"[{get_timestamp()}] Connected to Redis at {self.redis_host}:{self.redis_port}")
             self.connection_status.emit("connected")
             return True
         except Exception as e:
@@ -537,80 +643,38 @@ class RedisWorker(QObject):
             self.connection_status.emit("disconnected")
             return False
             
-    def get_redis_password(self):
-        """Get Redis password securely using HTTPS"""
-        # Validate the host to prevent SSRF attacks
-        if not self.validate_redis_host(self.redis_host):
-            raise ValueError(f"Invalid Redis host: {self.redis_host}")
-        
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {self.redis_bearer_token}'
-        }
-        try:
-            # Use HTTPS instead of HTTP for secure communication
-            url = f'https://{self.redis_host}/api/status/redis-info'
-            r = requests.get(url, headers=headers, timeout=5, verify=True)
-            
-            # Check for successful response
-            if r.status_code != 200:
-                self.log_message.emit(f"[{get_timestamp()}] Error retrieving Redis password: HTTP {r.status_code}")
-                raise ValueError(f"API returned status code {r.status_code}")
-                
-            data = r.json()
-            if 'password' not in data:
-                raise ValueError("Password not found in API response")
-                
-            return data['password']
-        except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error getting Redis password: {e}")
-            raise
-    
-    def validate_redis_host(self, host):
-        """Validate Redis host to prevent SSRF attacks"""
-        # Basic validation - could be extended with a whitelist approach
-        if not host or len(host) < 3:
-            return False
-            
-        # Prevent localhost, private IPs, etc.
-        forbidden_patterns = [
-            'localhost', '127.', '192.168.', '10.', '172.16.', '172.17.', 
-            '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.',
-            '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
-            '172.30.', '172.31.', '0.0.0.0', 'internal', 'local'
-        ]
-        
-        for pattern in forbidden_patterns:
-            if pattern in host.lower():
-                return False
-                
-        return True
-            
     def run(self):
         if not self.connect_to_redis():
             return
             
-        # Get the most recent status from redis on startup
+        # Get the most recent status from redis on startup for each group
         try:
-            latest = self.redis_client.lindex(self.queue_name, -1)
-            if latest:
-                data = json.loads(latest)
-                self.log_message.emit(f"[{get_timestamp()}] Last message: {data}")
-                status = data['status']
-                self.status_updated.emit(status)
-                
-                # Process ticket information if available
-                self.process_ticket_info(data)
+            for group in self.groups:
+                queue_name = f"{group}_channel"
+                latest = self.redis_client.lindex(queue_name, -1)
+                if latest:
+                    data = json.loads(latest)
+                    self.log_message.emit(f"[{get_timestamp()}] Last message from {group}: {data}")
+                    status = data.get('status')
+                    if status:
+                        self.status_updated.emit(status)
+                        # Process ticket information if available
+                        self.process_ticket_info(data)
+                        break  # Use the first status found
             else:
+                # No messages found in any queue
                 self.status_updated.emit('normal')
         except Exception as e:
             self.log_message.emit(f"[{get_timestamp()}] Error getting last message: {e}")
         
-        # Subscribe to the channel
+        # Subscribe to all group channels
         pubsub = self.redis_client.pubsub()
-        pubsub.subscribe(self.channel_name)
-        self.log_message.emit(f"[{get_timestamp()}] Subscribed to {self.channel_name}")
-        self.log_message.emit(f"[{get_timestamp()}] Listening for messages...")
+        for group in self.groups:
+            channel_name = f"{group}_channel"
+            pubsub.subscribe(channel_name)
+            self.log_message.emit(f"[{get_timestamp()}] Subscribed to {channel_name}")
+        
+        self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} channels...")
         
         # Listen for messages in a loop
         while self.is_running:
@@ -618,7 +682,8 @@ class RedisWorker(QObject):
             if message and message["type"] == "message":
                 try:
                     data = json.loads(message["data"])
-                    self.log_message.emit(f"[{get_timestamp()}] Received: {data}")
+                    channel = message["channel"]
+                    self.log_message.emit(f"[{get_timestamp()}] Received from {channel}: {data}")
                     status = data.get('status', 'error')
                     self.status_updated.emit(status)
                     
@@ -965,8 +1030,13 @@ class LightController(QObject):
 
 # Main window class
 class BusylightApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, username=None, password=None, redis_info=None):
         super().__init__()
+        
+        # Store user credentials and Redis info
+        self.username = username
+        self.password = password
+        self.redis_info = redis_info
         
         # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
@@ -991,9 +1061,9 @@ class BusylightApp(QMainWindow):
         self.light_controller.color_changed.connect(self.update_status_display)
         self.light_controller.device_status_changed.connect(self.update_device_status)
         
-        # Create Redis worker thread
+        # Create Redis worker thread with Redis info from login
         self.worker_thread = QThread()
-        self.redis_worker = RedisWorker()
+        self.redis_worker = RedisWorker(redis_info=self.redis_info)
         self.redis_worker.moveToThread(self.worker_thread)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
         self.redis_worker.connection_status.connect(self.update_redis_connection_status)
@@ -1019,6 +1089,13 @@ class BusylightApp(QMainWindow):
         self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
         self.status_label.setAlignment(Qt.AlignCenter)
         status_layout.addWidget(self.status_label)
+        
+        # User info
+        if self.username:
+            self.user_label = QLabel(f"Logged in as: {self.username}")
+            self.user_label.setStyleSheet("color: blue; font-style: italic;")
+            self.user_label.setAlignment(Qt.AlignCenter)
+            status_layout.addWidget(self.user_label)
         
         # Device info
         self.device_label = QLabel("Device: Disconnected")
@@ -1094,6 +1171,11 @@ class BusylightApp(QMainWindow):
         self.refresh_status_button.clicked.connect(self.refresh_status_from_redis)
         apply_layout.addWidget(self.refresh_status_button)
         
+        # Logout button
+        self.logout_button = QPushButton("Logout")
+        self.logout_button.clicked.connect(self.logout)
+        apply_layout.addWidget(self.logout_button)
+        
         status_layout.addLayout(apply_layout)
         status_group.setLayout(status_layout)
         layout.addWidget(status_group)
@@ -1143,6 +1225,10 @@ class BusylightApp(QMainWindow):
         # Add config option
         config_action = tray_menu.addAction("Configuration")
         config_action.triggered.connect(self.show_config_dialog)
+        
+        # Add logout option
+        logout_action = tray_menu.addAction("Logout")
+        logout_action.triggered.connect(self.logout)
         
         # Add other actions
         show_action = tray_menu.addAction("Show")
@@ -1206,7 +1292,7 @@ class BusylightApp(QMainWindow):
         
         # Create new worker with updated settings
         self.worker_thread = QThread()
-        self.redis_worker = RedisWorker()
+        self.redis_worker = RedisWorker(redis_info=self.redis_info)
         self.redis_worker.moveToThread(self.worker_thread)
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
@@ -1459,25 +1545,27 @@ class BusylightApp(QMainWindow):
                 self.add_log(f"[{get_timestamp()}] Cannot refresh from Redis: Redis not connected")
                 return
                 
-            # Get the queue name from the worker
-            queue_name = self.redis_worker.queue_name
-            
-            # Try to get the most recent status
-            latest = self.redis_worker.redis_client.lindex(queue_name, -1)
-            if latest:
+            # Try to get the most recent status from any group queue
+            for group in self.redis_worker.groups:
+                queue_name = f"{group}_channel"
                 try:
-                    data = json.loads(latest)
-                    status = data.get('status')
-                    if status:
-                        self.add_log(f"[{get_timestamp()}] Retrieved last status from Redis: {status}")
-                        # Apply the status
-                        self.light_controller.set_status(status)
-                    else:
-                        self.add_log(f"[{get_timestamp()}] Retrieved message from Redis but no status field found")
+                    latest = self.redis_worker.redis_client.lindex(queue_name, -1)
+                    if latest:
+                        try:
+                            data = json.loads(latest)
+                            status = data.get('status')
+                            if status:
+                                self.add_log(f"[{get_timestamp()}] Retrieved last status from Redis ({group}): {status}")
+                                # Apply the status
+                                self.light_controller.set_status(status)
+                                return  # Use the first status found
+                        except Exception as e:
+                            self.add_log(f"[{get_timestamp()}] Error parsing Redis message from {group}: {e}")
                 except Exception as e:
-                    self.add_log(f"[{get_timestamp()}] Error parsing Redis message: {e}")
-            else:
-                self.add_log(f"[{get_timestamp()}] No messages found in Redis queue")
+                    self.add_log(f"[{get_timestamp()}] Error accessing queue {queue_name}: {e}")
+            
+            # If we get here, no messages were found in any queue
+            self.add_log(f"[{get_timestamp()}] No messages found in any Redis queue")
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error retrieving status from Redis: {e}")
 
@@ -1589,6 +1677,24 @@ class BusylightApp(QMainWindow):
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error opening URL: {e}")
 
+    def logout(self):
+        """Handle logout option"""
+        # Show confirmation dialog
+        reply = QMessageBox.question(self, "Logout Confirmation", 
+                                   f"Are you sure you want to logout user '{self.username}'?",
+                                   QMessageBox.Yes | QMessageBox.No,
+                                   QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            self.add_log(f"[{get_timestamp()}] User '{self.username}' logging out")
+            
+            # Clear credentials
+            self.username = None
+            self.password = None
+            
+            # Exit the application
+            self.on_exit()
+
 # Main application
 def main():
     app = QApplication(sys.argv)
@@ -1615,10 +1721,19 @@ def main():
         # On macOS, we need to set this attribute to hide dock icon
         app.setAttribute(Qt.AA_DontUseNativeMenuBar, True)
     
-    # For both platforms, this will keep the app running without dock/taskbar icons
+    # Show login dialog first
+    login_dialog = LoginDialog()
+    if login_dialog.exec() != QDialog.Accepted:
+        # User cancelled login, exit application
+        print(f"[{get_timestamp()}] Login cancelled by user")
+        return 0
     
-    # Create main window
-    window = BusylightApp()
+    # Get credentials from login dialog
+    username, password, redis_info = login_dialog.get_credentials()
+    print(f"[{get_timestamp()}] User '{username}' logged in successfully")
+    
+    # Create main window with credentials
+    window = BusylightApp(username, password, redis_info)
     
     # Set up proper exit handling
     app.aboutToQuit.connect(lambda: cleanup_application(window))
@@ -1648,4 +1763,15 @@ def create_default_icon():
         
         # Save it
         pixmap.save("icon.png")
-        print(f"[{get_timestamp()}] Created default icon.png") 
+        print(f"[{get_timestamp()}] Created default icon.png")
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # Handle Ctrl+C gracefully
+        print(f"\n[{get_timestamp()}] Application interrupted by user")
+        sys.exit(0)
+    except Exception as e:
+        print(f"[{get_timestamp()}] Unexpected error: {e}")
+        sys.exit(1) 
