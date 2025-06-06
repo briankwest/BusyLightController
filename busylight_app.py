@@ -68,6 +68,22 @@ class LoginDialog(QDialog):
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
+
+        # Add logo image
+        logo_label = QLabel()
+        if os.path.exists("sw.jpeg"):
+            pixmap = QPixmap("sw.jpeg")
+            # Scale the image to a reasonable size (e.g., 200px wide, maintaining aspect ratio)
+            scaled_pixmap = pixmap.scaled(200, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_label.setPixmap(scaled_pixmap)
+            logo_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(logo_label)
+        else:
+            # If image doesn't exist, show a placeholder or skip
+            logo_label.setText("(Logo not found)")
+            logo_label.setAlignment(Qt.AlignCenter)
+            logo_label.setStyleSheet("color: gray; font-style: italic;")
+            layout.addWidget(logo_label)
         
         # Title label
         title_label = QLabel("Please enter your B.L.A.S.S.T. credentials")
@@ -1250,7 +1266,7 @@ class BusylightApp(QMainWindow):
         self.setCentralWidget(main_widget)
         
         # Set window size
-        self.resize(700, 600)
+        self.resize(900, 800)
         
         # Set up connections
         self.light_controller.log_message.connect(self.add_log)
