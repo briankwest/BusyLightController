@@ -1398,6 +1398,17 @@ class BusylightApp(QMainWindow):
                 timestamp_label.setAlignment(Qt.AlignCenter)
                 group_layout.addWidget(timestamp_label)
                 
+                # Event history display for this group
+                event_history_label = QLabel("Event History")
+                event_history_label.setStyleSheet("font-weight: bold; color: #333; margin-top: 10px;")
+                group_layout.addWidget(event_history_label)
+                
+                event_history_text = QTextEdit()
+                event_history_text.setReadOnly(True)
+                event_history_text.setMaximumHeight(100)  # Limit height to keep groups compact
+                event_history_text.setStyleSheet("font-size: 9px; background-color: #f8f8f8; border: 1px solid #ddd; border-radius: 3px;")
+                group_layout.addWidget(event_history_text)
+                
                 group_widget.setLayout(group_layout)
                 scroll_layout.addWidget(group_widget)
                 
@@ -1419,7 +1430,8 @@ class BusylightApp(QMainWindow):
                 self.group_widgets[group] = {
                     'widget': group_widget,
                     'status_label': status_label,
-                    'timestamp_label': timestamp_label
+                    'timestamp_label': timestamp_label,
+                    'event_history_text': event_history_text
                 }
             
             scroll_area.setWidget(scroll_widget)
@@ -1439,14 +1451,14 @@ class BusylightApp(QMainWindow):
             status_group.setLayout(status_layout)
             layout.addWidget(status_group)
         
-        # Log section
-        log_group = QGroupBox("Log")
-        log_layout = QVBoxLayout()
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        log_layout.addWidget(self.log_text)
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
+        # Log section - commented out since we're using group-specific event history
+        # log_group = QGroupBox("Log")
+        # log_layout = QVBoxLayout()
+        # self.log_text = QTextEdit()
+        # self.log_text.setReadOnly(True)
+        # log_layout.addWidget(self.log_text)
+        # log_group.setLayout(log_layout)
+        # layout.addWidget(log_group)
         
         main_widget.setLayout(layout)
         self.setCentralWidget(main_widget)
@@ -1642,7 +1654,7 @@ class BusylightApp(QMainWindow):
     def add_log(self, message):
         """Add a message to the log if the UI has been created"""
         if not hasattr(self, 'log_text') or self.log_text is None:
-            # Just print to console if the UI hasn't been created yet
+            # Just print to console if the UI hasn't been created yet or log widget was removed
             print(message)
             return
             
@@ -1957,6 +1969,7 @@ class BusylightApp(QMainWindow):
             widgets = self.group_widgets[group]
             status_label = widgets['status_label']
             timestamp_label = widgets['timestamp_label']
+            event_history_text = widgets['event_history_text']
             
             # Update status text and color
             status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
@@ -1966,23 +1979,56 @@ class BusylightApp(QMainWindow):
             if status in self.light_controller.COLOR_MAP:
                 r, g, b = self.light_controller.COLOR_MAP[status]
                 if status == 'off':
-                    status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+                    status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px;")
                 else:
-                    status_label.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 5px; background-color: rgb({r}, {g}, {b}); color: black;")
+                    status_label.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px; background-color: rgb({r}, {g}, {b}); color: black;")
             
             # Update timestamp
             timestamp_label.setText(f"Last Update: {get_timestamp()}")
             
-            # Log the update
-            self.add_log(f"[{get_timestamp()}] Group '{group}' status updated: {status_name}")
+            # Parse and display event information in the group's history
+            self.parse_and_display_event(group, status, data, event_history_text)
             
-            # If there's ticket info, log it
-            if 'ticket' in data:
-                ticket_id = data.get('ticket', 'Unknown')
-                summary = data.get('summary', '')
-                self.add_log(f"[{get_timestamp()}] Group '{group}' ticket: #{ticket_id} - {summary}")
         else:
-            self.add_log(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
+            # Fallback logging if no UI widget found
+            print(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
+    
+    def parse_and_display_event(self, group, status, data, event_history_text):
+        """Parse incoming event data and display it in the group's event history"""
+        try:
+            # Create a formatted event message
+            timestamp = data.get('timestamp', get_timestamp())
+            source = data.get('source', 'Unknown')
+            reason = data.get('reason', '')
+            
+            # Format the event message
+            if reason:
+                event_message = f"{timestamp} - {status.upper()} by {source}\nReason: {reason}\n"
+            else:
+                event_message = f"{timestamp} - {status.upper()} by {source}\n"
+            
+            # Add the new event to the top of the history
+            current_text = event_history_text.toPlainText()
+            new_text = event_message + current_text
+            
+            # Limit the history to prevent it from growing too large
+            lines = new_text.split('\n')
+            if len(lines) > 20:  # Keep only last 20 lines
+                lines = lines[:20]
+                new_text = '\n'.join(lines)
+            
+            # Update the event history display
+            event_history_text.setPlainText(new_text)
+            
+            # Auto-scroll to top to show the newest event
+            scrollbar = event_history_text.verticalScrollBar()
+            scrollbar.setValue(0)
+            
+        except Exception as e:
+            # If parsing fails, just add a simple message
+            simple_message = f"{get_timestamp()} - {status.upper()}\n"
+            current_text = event_history_text.toPlainText()
+            event_history_text.setPlainText(simple_message + current_text)
 
     def on_group_clicked(self, group):
         """Handle group status widget click event"""
