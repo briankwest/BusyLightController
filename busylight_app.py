@@ -183,7 +183,6 @@ class LoginDialog(QDialog):
         )
 
         if response.status_code == 200:
-            print(response.json())
             self.redis_info = response.json()  # Store the full response
             return True
         else:
