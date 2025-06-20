@@ -1343,25 +1343,49 @@ class BusylightApp(QMainWindow):
         
         # User info section
         user_group = QGroupBox("User Information")
-        user_layout = QVBoxLayout()
+        user_layout = QHBoxLayout()  # Changed to horizontal layout
         
         if self.username:
             self.user_label = QLabel(f"Logged in as: {self.username}")
             self.user_label.setStyleSheet("color: blue; font-style: italic; font-size: 14px;")
-            self.user_label.setAlignment(Qt.AlignCenter)
             user_layout.addWidget(self.user_label)
         
-        # Device info
-        self.device_label = QLabel("Device: Disconnected")
-        self.device_label.setStyleSheet("color: red;")
-        self.device_label.setAlignment(Qt.AlignCenter)
-        user_layout.addWidget(self.device_label)
+        # Add some spacing
+        user_layout.addStretch()
         
-        # Redis connection info
-        self.redis_connection_label = QLabel("Redis: Disconnected")
+        # Device info with colored dot
+        device_container = QWidget()
+        device_layout = QHBoxLayout(device_container)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.device_label = QLabel("Busylight: Disconnected")
+        self.device_label.setStyleSheet("color: red;")
+        device_layout.addWidget(self.device_label)
+        
+        # Connection status dot
+        self.connection_dot = QLabel("●")
+        self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+        self.connection_dot.setToolTip("Busylight: Disconnected")
+        device_layout.addWidget(self.connection_dot)
+        
+        user_layout.addWidget(device_container)
+        
+        # Redis connection info with colored dot
+        redis_container = QWidget()
+        redis_layout = QHBoxLayout(redis_container)
+        redis_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.redis_connection_label = QLabel("Disconnected")
         self.redis_connection_label.setStyleSheet("color: red;")
-        self.redis_connection_label.setAlignment(Qt.AlignCenter)
-        user_layout.addWidget(self.redis_connection_label)
+        redis_layout.addWidget(self.redis_connection_label)
+        
+        # Redis connection status dot
+        self.redis_connection_dot = QLabel("●")
+        self.redis_connection_dot.setStyleSheet("font-size: 16px; color: red;")
+        self.redis_connection_dot.setToolTip("Disconnected")
+        redis_layout.addWidget(self.redis_connection_dot)
+        
+        user_layout.addWidget(redis_container)
         
         user_group.setLayout(user_layout)
         layout.addWidget(user_group)
@@ -1747,18 +1771,31 @@ class BusylightApp(QMainWindow):
             return
             
         if connected:
-            self.device_label.setText(f"Device: {device_name}")
+            self.device_label.setText(f"Busylight: {device_name}")
             self.device_label.setStyleSheet("color: green;")
-            self.add_log(f"[{get_timestamp()}] Connected to device: {device_name}")
+            # Update connection dot
+            if hasattr(self, 'connection_dot'):
+                self.connection_dot.setStyleSheet("font-size: 16px; color: green;")
+                self.connection_dot.setToolTip(f"Busylight: Connected ({device_name})")
+            self.add_log(f"[{get_timestamp()}] Connected to Busylight: {device_name}")
         else:
+            # Show red for any disconnected state (including simulation mode)
             if self.light_controller.simulation_mode:
-                self.device_label.setText("Device: Simulation Mode")
-                self.device_label.setStyleSheet("color: orange;")
-                self.add_log(f"[{get_timestamp()}] Running in simulation mode")
-            else:
-                self.device_label.setText("Device: Disconnected")
+                self.device_label.setText("Busylight: No device found")
                 self.device_label.setStyleSheet("color: red;")
-                self.add_log(f"[{get_timestamp()}] Device disconnected")
+                # Update connection dot
+                if hasattr(self, 'connection_dot'):
+                    self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.connection_dot.setToolTip("Busylight: No device found")
+                self.add_log(f"[{get_timestamp()}] No Busylight device found")
+            else:
+                self.device_label.setText("Busylight: No device found")
+                self.device_label.setStyleSheet("color: red;")
+                # Update connection dot
+                if hasattr(self, 'connection_dot'):
+                    self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.connection_dot.setToolTip("Busylight: No device found")
+                self.add_log(f"[{get_timestamp()}] No Busylight device found")
 
     def manually_connect_device(self):
         """Manually attempt to connect to the device with user feedback"""
@@ -1863,10 +1900,18 @@ class BusylightApp(QMainWindow):
             if status == "connected":
                 self.redis_connection_label.setText("Connected")
                 self.redis_connection_label.setStyleSheet("color: green;")
+                # Update Redis connection dot
+                if hasattr(self, 'redis_connection_dot'):
+                    self.redis_connection_dot.setStyleSheet("font-size: 16px; color: green;")
+                    self.redis_connection_dot.setToolTip("Connected")
                 self.add_log(f"[{get_timestamp()}] Redis connected")
             else:
                 self.redis_connection_label.setText("Disconnected")
                 self.redis_connection_label.setStyleSheet("color: red;")
+                # Update Redis connection dot
+                if hasattr(self, 'redis_connection_dot'):
+                    self.redis_connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.redis_connection_dot.setToolTip("Disconnected")
                 self.add_log(f"[{get_timestamp()}] Redis disconnected")
 
     def toggle_tray_icon(self):
