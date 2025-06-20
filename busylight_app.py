@@ -5,6 +5,7 @@ import json
 import sys
 import os
 import platform
+import argparse
 from datetime import datetime
 import redis
 import asyncio
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
                             QFileDialog, QMessageBox, QScrollArea, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings
-from PySide6.QtGui import QIcon, QColor, QPixmap
+from PySide6.QtGui import QIcon, QColor, QPixmap, QFont
 import subprocess
 import webbrowser
 
@@ -990,11 +991,11 @@ class LightController(QObject):
     }
 
     COLOR_NAMES = {
-        'alert': "Red (Alert)",
-        'alert-acked': "Orange (Alert-Acked)",
-        'warning': "Yellow (Warning)",
-        'error': "Purple (Error)",
-        'normal': "Green (Normal)",
+        'alert': "Red\n(Alert)",
+        'alert-acked': "Orange\n(Alert-Acked)",
+        'warning': "Yellow\n(Warning)",
+        'error': "Purple\n(Error)",
+        'normal': "Green\n(Normal)",
         'off': "Off",
         # Additional colors
         'blue': "Blue",
@@ -1343,11 +1344,37 @@ class BusylightApp(QMainWindow):
         
         # User info section
         user_group = QGroupBox("User Information")
+        
+        # Set bold font directly using Qt's font system
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)  # Larger size for prominence
+        user_group.setFont(bold_font)
+        
+        user_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f8f9fa);
+                border: 2px solid #000000;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: #202124;
+                font-weight: 800;
+                font-size: 16px;
+            }
+        """)
         user_layout = QHBoxLayout()  # Changed to horizontal layout
         
         if self.username:
             self.user_label = QLabel(f"Logged in as: {self.username}")
-            self.user_label.setStyleSheet("color: blue; font-style: italic; font-size: 14px;")
+            self.user_label.setStyleSheet("color: #4285f4; font-weight: 500; font-size: 14px;")
             user_layout.addWidget(self.user_label)
         
         # Add some spacing
@@ -1357,31 +1384,36 @@ class BusylightApp(QMainWindow):
         device_container = QWidget()
         device_layout = QHBoxLayout(device_container)
         device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.setSpacing(8)
         
         self.device_label = QLabel("Busylight: Disconnected")
-        self.device_label.setStyleSheet("color: red;")
+        self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
         device_layout.addWidget(self.device_label)
         
         # Connection status dot
         self.connection_dot = QLabel("●")
-        self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+        self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
         self.connection_dot.setToolTip("Busylight: Disconnected")
         device_layout.addWidget(self.connection_dot)
         
         user_layout.addWidget(device_container)
         
+        # Add spacing between device and Redis
+        user_layout.addSpacing(20)
+        
         # Redis connection info with colored dot
         redis_container = QWidget()
         redis_layout = QHBoxLayout(redis_container)
         redis_layout.setContentsMargins(0, 0, 0, 0)
+        redis_layout.setSpacing(8)
         
         self.redis_connection_label = QLabel("Disconnected")
-        self.redis_connection_label.setStyleSheet("color: red;")
+        self.redis_connection_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
         redis_layout.addWidget(self.redis_connection_label)
         
         # Redis connection status dot
         self.redis_connection_dot = QLabel("●")
-        self.redis_connection_dot.setStyleSheet("font-size: 16px; color: red;")
+        self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
         self.redis_connection_dot.setToolTip("Disconnected")
         redis_layout.addWidget(self.redis_connection_dot)
         
@@ -1393,6 +1425,13 @@ class BusylightApp(QMainWindow):
         # Dynamic Group Status Section
         if self.redis_info and 'groups' in self.redis_info:
             groups_group = QGroupBox("Group Status Monitor")
+            
+            # Set bold font directly using Qt's font system
+            bold_font = QFont()
+            bold_font.setBold(True)
+            bold_font.setPointSize(12)  # Larger size for prominence
+            groups_group.setFont(bold_font)
+            
             groups_layout = QVBoxLayout()
             
             # Create a scrollable area for groups
@@ -1404,34 +1443,109 @@ class BusylightApp(QMainWindow):
             # Create status widget for each group
             for group in self.redis_info['groups']:
                 group_widget = QGroupBox(f"Group: {group}")
-                group_widget.setStyleSheet("QGroupBox { border: 2px solid gray; border-radius: 5px; margin: 5px; padding-top: 15px; } QGroupBox:hover { border-color: blue; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
-                group_layout = QVBoxLayout()
-                group_layout.setSpacing(8)  # Add spacing between elements
-                group_layout.setContentsMargins(10, 10, 10, 10)  # Add margins inside the group box
                 
-                # Status display
-                status_label = QLabel("Status: Unknown")
-                status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px;")
+                # Set bold font directly using Qt's font system
+                bold_font = QFont()
+                bold_font.setBold(True)
+                bold_font.setPointSize(12)  # Larger size for prominence
+                group_widget.setFont(bold_font)
+                
+                group_widget.setStyleSheet("""
+                    QGroupBox {
+                        border-radius: 12px;
+                        margin: 8px;
+                        padding: 16px;
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #ffffff, stop:1 #f8f9fa);
+                        border: 2px solid black;
+                    }
+                    QGroupBox:hover {
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #ffffff, stop:1 #f1f3f4);
+                        border: 1px solid #4285f4;
+                    }
+                    QGroupBox::title {
+                        subcontrol-origin: margin;
+                        left: 16px;
+                        padding: 0 8px 0 8px;
+                        color: #202124;
+                        font-weight: 800;
+                        font-size: 16px;
+                    }
+                """)
+                group_layout = QHBoxLayout() 
+                group_layout.setSpacing(16)
+                group_layout.setContentsMargins(0, 0, 0, 0)
+                
+                # Left side: Status display area
+                status_container = QWidget()
+                status_container_layout = QVBoxLayout(status_container)
+                status_container_layout.setContentsMargins(0, 0, 0, 0)
+                status_container_layout.setSpacing(8)
+                status_container_layout.setAlignment(Qt.AlignCenter)
+                
+                # Square status color bar with modern styling
+                status_label = QLabel("Unknown")
+                status_label.setStyleSheet("""
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 12px;
+                    border-radius: 16px;
+                    min-width: 90px;
+                    min-height: 90px;
+                    max-width: 90px;
+                    max-height: 90px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #f8f9fa, stop:1 #e9ecef);
+                    border: 2px solid #dee2e6;
+                    color: #6c757d;
+                """)
                 status_label.setAlignment(Qt.AlignCenter)
-                status_label.setMinimumHeight(35)  # Ensure minimum height for the status bar
-                group_layout.addWidget(status_label)
+                status_label.setFixedSize(90, 90)
+                status_container_layout.addWidget(status_label, alignment=Qt.AlignCenter)
                 
-                # Timestamp display
+                # Timestamp label
                 timestamp_label = QLabel("Last Update: Never")
-                timestamp_label.setStyleSheet("color: gray; font-size: 10px; font-style: italic; padding: 5px;")
+                timestamp_label.setStyleSheet("color: gray; font-size: 9px; font-style: italic;")
                 timestamp_label.setAlignment(Qt.AlignCenter)
-                group_layout.addWidget(timestamp_label)
+                status_container_layout.addWidget(timestamp_label, alignment=Qt.AlignCenter)
                 
-                # Event history display for this group
+                group_layout.addWidget(status_container)
+                
+                # Right side: Event history display
+                history_container = QWidget()
+                history_layout = QVBoxLayout(history_container)
+                history_layout.setContentsMargins(0, 0, 0, 0)
+                history_layout.setSpacing(8)
+                
+                # Event history label with modern styling
                 event_history_label = QLabel("Event History")
-                event_history_label.setStyleSheet("font-weight: bold; color: #333; margin-top: 10px;")
-                group_layout.addWidget(event_history_label)
+                event_history_label.setStyleSheet("""
+                    font-weight: 600;
+                    color: #202124;
+                    font-size: 12px;
+                    padding: 4px 0;
+                """)
+                history_layout.addWidget(event_history_label)
                 
+                # Event history text area with modern styling
                 event_history_text = QTextEdit()
                 event_history_text.setReadOnly(True)
-                event_history_text.setMaximumHeight(100)  # Limit height to keep groups compact
-                event_history_text.setStyleSheet("font-size: 9px; background-color: #f8f8f8; border: 1px solid #ddd; border-radius: 3px;")
-                group_layout.addWidget(event_history_text)
+                event_history_text.setMinimumHeight(90)
+                event_history_text.setStyleSheet("""
+                    font-size: 10px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                    background: #ffffff;
+                    border: 1px solid #e9ecef;
+                    border-radius: 8px;
+                    padding: 8px;
+                    color: #495057;
+                    selection-background-color: #4285f4;
+                    selection-color: #ffffff;
+                """)
+                history_layout.addWidget(event_history_text)
+                
+                group_layout.addWidget(history_container)
                 
                 group_widget.setLayout(group_layout)
                 scroll_layout.addWidget(group_widget)
@@ -1439,8 +1553,31 @@ class BusylightApp(QMainWindow):
                 # Make the group widget clickable with tactile effect
                 def create_click_handler(group_name, widget):
                     def mouse_press_event(event):
-                        # Add pressed effect
-                        widget.setStyleSheet("QGroupBox { border: 2px solid darkblue; border-radius: 5px; margin: 7px; padding-top: 15px; background-color: #e6f3ff; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+                        # Add pressed effect while preserving bold title
+                        widget.setStyleSheet("""
+                            QGroupBox { 
+                                border: 2px solid darkblue; 
+                                border-radius: 12px; 
+                                margin: 7px; 
+                                padding: 16px; 
+                                background-color: #e6f3ff; 
+                            } 
+                            QGroupBox::title { 
+                                subcontrol-origin: margin; 
+                                left: 16px; 
+                                padding: 0 8px 0 8px; 
+                                color: #202124; 
+                                font-weight: 800; 
+                                font-size: 16px; 
+                            }
+                        """)
+                        
+                        # Ensure the font remains bold
+                        bold_font = QFont()
+                        bold_font.setBold(True)
+                        bold_font.setPointSize(12)
+                        widget.setFont(bold_font)
+                        
                         QApplication.processEvents()  # Force immediate update
                         
                         # Small delay for tactile effect
@@ -1772,28 +1909,28 @@ class BusylightApp(QMainWindow):
             
         if connected:
             self.device_label.setText(f"Busylight: {device_name}")
-            self.device_label.setStyleSheet("color: green;")
+            self.device_label.setStyleSheet("color: #28a745; font-weight: 500; font-size: 13px;")
             # Update connection dot
             if hasattr(self, 'connection_dot'):
-                self.connection_dot.setStyleSheet("font-size: 16px; color: green;")
+                self.connection_dot.setStyleSheet("font-size: 18px; color: #28a745; font-weight: bold;")
                 self.connection_dot.setToolTip(f"Busylight: Connected ({device_name})")
             self.add_log(f"[{get_timestamp()}] Connected to Busylight: {device_name}")
         else:
             # Show red for any disconnected state (including simulation mode)
             if self.light_controller.simulation_mode:
                 self.device_label.setText("Busylight: No device found")
-                self.device_label.setStyleSheet("color: red;")
+                self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
                 # Update connection dot
                 if hasattr(self, 'connection_dot'):
-                    self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
                     self.connection_dot.setToolTip("Busylight: No device found")
                 self.add_log(f"[{get_timestamp()}] No Busylight device found")
             else:
                 self.device_label.setText("Busylight: No device found")
-                self.device_label.setStyleSheet("color: red;")
+                self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
                 # Update connection dot
                 if hasattr(self, 'connection_dot'):
-                    self.connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
                     self.connection_dot.setToolTip("Busylight: No device found")
                 self.add_log(f"[{get_timestamp()}] No Busylight device found")
 
@@ -1899,18 +2036,18 @@ class BusylightApp(QMainWindow):
         if hasattr(self, 'redis_connection_label'):
             if status == "connected":
                 self.redis_connection_label.setText("Connected")
-                self.redis_connection_label.setStyleSheet("color: green;")
+                self.redis_connection_label.setStyleSheet("color: #28a745; font-weight: 500; font-size: 13px;")
                 # Update Redis connection dot
                 if hasattr(self, 'redis_connection_dot'):
-                    self.redis_connection_dot.setStyleSheet("font-size: 16px; color: green;")
+                    self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #28a745; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Connected")
                 self.add_log(f"[{get_timestamp()}] Redis connected")
             else:
                 self.redis_connection_label.setText("Disconnected")
-                self.redis_connection_label.setStyleSheet("color: red;")
+                self.redis_connection_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
                 # Update Redis connection dot
                 if hasattr(self, 'redis_connection_dot'):
-                    self.redis_connection_dot.setStyleSheet("font-size: 16px; color: red;")
+                    self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Disconnected")
                 self.add_log(f"[{get_timestamp()}] Redis disconnected")
 
@@ -2013,22 +2150,66 @@ class BusylightApp(QMainWindow):
         if group in self.group_widgets:
             widgets = self.group_widgets[group]
             status_label = widgets['status_label']
-            timestamp_label = widgets['timestamp_label']
             event_history_text = widgets['event_history_text']
             
             # Update status text and color
             status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
-            status_label.setText(f"Status: {status_name}")
+            status_label.setText(status_name)
             
-            # Set background color based on status
+            # Set modern background color based on status
             if status in self.light_controller.COLOR_MAP:
                 r, g, b = self.light_controller.COLOR_MAP[status]
                 if status == 'off':
-                    status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px;")
+                    status_label.setStyleSheet(f"""
+                        font-size: 11px;
+                        font-weight: 700;
+                        padding: 12px;
+                        border-radius: 16px;
+                        min-width: 90px;
+                        min-height: 90px;
+                        max-width: 90px;
+                        max-height: 90px;
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 #f8f9fa, stop:1 #e9ecef);
+                        border: 2px solid #dee2e6;
+                        color: #6c757d;
+                    """)
                 else:
-                    status_label.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 8px; border-radius: 3px; background-color: rgb({r}, {g}, {b}); color: black;")
+                    # Create a subtle gradient for active statuses
+                    status_label.setStyleSheet(f"""
+                        font-size: 11px;
+                        font-weight: 700;
+                        padding: 12px;
+                        border-radius: 16px;
+                        min-width: 90px;
+                        min-height: 90px;
+                        max-width: 90px;
+                        max-height: 90px;
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}), 
+                            stop:1 rgb({r}, {g}, {b}));
+                        border: 2px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
+                        color: #000000;
+                    """)
+            else:
+                # Default styling for unknown status
+                status_label.setStyleSheet("""
+                    font-size: 11px;
+                    font-weight: 700;
+                    padding: 12px;
+                    border-radius: 16px;
+                    min-width: 90px;
+                    min-height: 90px;
+                    max-width: 90px;
+                    max-height: 90px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 #f8f9fa, stop:1 #e9ecef);
+                    border: 2px solid #dee2e6;
+                    color: #6c757d;
+                """)
             
             # Update timestamp
+            timestamp_label = widgets['timestamp_label']
             timestamp_label.setText(f"Last Update: {get_timestamp()}")
             
             # Parse and display event information in the group's history
@@ -2106,8 +2287,37 @@ class BusylightApp(QMainWindow):
     
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
-        # Restore normal appearance
-        widget.setStyleSheet("QGroupBox { border: 2px solid gray; border-radius: 5px; margin: 5px; padding-top: 15px; } QGroupBox:hover { border-color: blue; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }")
+        # Restore normal appearance with bold title
+        widget.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f8f9fa);
+                border: 1px solid #e9ecef;
+            }
+            QGroupBox:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f1f3f4);
+                border: 1px solid #4285f4;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: #202124;
+                font-weight: 800;
+                font-size: 16px;
+            }
+        """)
+        
+        # Ensure the font remains bold
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)
+        widget.setFont(bold_font)
         
         # Open the dialog
         self.on_group_clicked(group)
