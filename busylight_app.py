@@ -209,13 +209,75 @@ class ConfigDialog(QDialog):
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         # Text-to-Speech settings group
         tts_group = QGroupBox("Text-to-Speech Settings")
+        
+        # Set bold font for the title
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)
+        tts_group.setFont(bold_font)
+        
+        tts_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f8f9fa);
+                border: 2px solid #000000;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: #202124;
+                font-weight: 800;
+                font-size: 16px;
+            }
+        """)
+        
         tts_layout = QFormLayout(tts_group)
+        tts_layout.setSpacing(12)
         
         self.tts_enabled_checkbox = QCheckBox()
+        self.tts_enabled_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                color: #202124;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #4285f4;
+                border-color: #4285f4;
+            }
+        """)
+        
         self.tts_command_input = QLineEdit()
+        self.tts_command_input.setStyleSheet("""
+            QLineEdit {
+                padding: 8px 12px;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                background: #ffffff;
+                font-size: 13px;
+                color: #495057;
+            }
+            QLineEdit:focus {
+                border-color: #4285f4;
+                outline: none;
+            }
+        """)
         
         # Create a layout for command input and test button
         tts_cmd_layout = QHBoxLayout()
@@ -225,6 +287,26 @@ class ConfigDialog(QDialog):
         self.tts_test_button = QPushButton("Test")
         self.tts_test_button.setToolTip("Test the TTS command")
         self.tts_test_button.clicked.connect(self.test_tts_command)
+        self.tts_test_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4285f4, stop:1 #3367d6);
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3367d6, stop:1 #2a56c6);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2a56c6, stop:1 #1e3a8a);
+            }
+        """)
         tts_cmd_layout.addWidget(self.tts_test_button)
         
         tts_layout.addRow("Enable Text-to-Speech:", self.tts_enabled_checkbox)
@@ -232,15 +314,72 @@ class ConfigDialog(QDialog):
         
         # Add help text
         tts_help = QLabel("Use {summary} as a placeholder for the ticket summary")
-        tts_help.setStyleSheet("color: gray; font-style: italic;")
+        tts_help.setStyleSheet("color: #6c757d; font-style: italic; font-size: 12px; padding: 4px 0;")
         tts_layout.addRow("", tts_help)
         
         # URL Handler settings group
         url_group = QGroupBox("URL Handler Settings")
+        
+        # Set bold font for the title
+        url_group.setFont(bold_font)
+        
+        url_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f8f9fa);
+                border: 2px solid #000000;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: #202124;
+                font-weight: 800;
+                font-size: 16px;
+            }
+        """)
+        
         url_layout = QFormLayout(url_group)
+        url_layout.setSpacing(12)
         
         self.url_enabled_checkbox = QCheckBox()
+        self.url_enabled_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                color: #202124;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #4285f4;
+                border-color: #4285f4;
+            }
+        """)
+        
         self.url_command_input = QLineEdit()
+        self.url_command_input.setStyleSheet("""
+            QLineEdit {
+                padding: 8px 12px;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                background: #ffffff;
+                font-size: 13px;
+                color: #495057;
+            }
+            QLineEdit:focus {
+                border-color: #4285f4;
+                outline: none;
+            }
+        """)
         
         # Create a layout for command input and test button
         url_cmd_layout = QHBoxLayout()
@@ -250,6 +389,26 @@ class ConfigDialog(QDialog):
         self.url_test_button = QPushButton("Test")
         self.url_test_button.setToolTip("Test the URL command")
         self.url_test_button.clicked.connect(self.test_url_command)
+        self.url_test_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4285f4, stop:1 #3367d6);
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3367d6, stop:1 #2a56c6);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2a56c6, stop:1 #1e3a8a);
+            }
+        """)
         url_cmd_layout.addWidget(self.url_test_button)
         
         url_layout.addRow("Open URLs:", self.url_enabled_checkbox)
@@ -257,16 +416,94 @@ class ConfigDialog(QDialog):
         
         # Add help text
         url_help = QLabel("Use {url} as a placeholder for the ticket URL")
-        url_help.setStyleSheet("color: gray; font-style: italic;")
+        url_help.setStyleSheet("color: #6c757d; font-style: italic; font-size: 12px; padding: 4px 0;")
         url_layout.addRow("", url_help)
         
         # General settings group
         general_group = QGroupBox("Application Settings")
+        
+        # Set bold font for the title
+        general_group.setFont(bold_font)
+        
+        general_group.setStyleSheet("""
+            QGroupBox {
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffffff, stop:1 #f8f9fa);
+                border: 2px solid #000000;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: #202124;
+                font-weight: 800;
+                font-size: 16px;
+            }
+        """)
+        
         general_layout = QFormLayout(general_group)
+        general_layout.setSpacing(12)
         
         self.start_minimized_checkbox = QCheckBox()
+        self.start_minimized_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                color: #202124;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #4285f4;
+                border-color: #4285f4;
+            }
+        """)
+        
         self.autostart_checkbox = QCheckBox()
+        self.autostart_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                color: #202124;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #4285f4;
+                border-color: #4285f4;
+            }
+        """)
+        
         self.simulation_mode_checkbox = QCheckBox()
+        self.simulation_mode_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 14px;
+                color: #202124;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #dee2e6;
+                border-radius: 4px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #4285f4;
+                border-color: #4285f4;
+            }
+        """)
         
         general_layout.addRow("Start Minimized:", self.start_minimized_checkbox)
         general_layout.addRow("Run at System Startup:", self.autostart_checkbox)
@@ -275,10 +512,39 @@ class ConfigDialog(QDialog):
         # Test connection button
         test_button = QPushButton("Test Connection")
         test_button.clicked.connect(self.test_connection)
+        test_button.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #28a745, stop:1 #218838);
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 14px;
+                margin: 8px 0;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #218838, stop:1 #1e7e34);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1e7e34, stop:1 #155724);
+            }
+        """)
         
         # Add status label for test results
         self.test_status_label = QLabel()
         self.test_status_label.setAlignment(Qt.AlignCenter)
+        self.test_status_label.setStyleSheet("""
+            QLabel {
+                padding: 8px;
+                border-radius: 6px;
+                font-weight: 500;
+                font-size: 13px;
+            }
+        """)
         
         # Button Box
         button_box = QDialogButtonBox(QDialogButtonBox.Save | 
@@ -286,14 +552,46 @@ class ConfigDialog(QDialog):
         button_box.accepted.connect(self.save_settings)
         button_box.rejected.connect(self.reject)
         
+        # Style the button box
+        button_box.setStyleSheet("""
+            QDialogButtonBox QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4285f4, stop:1 #3367d6);
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+                min-width: 80px;
+            }
+            QDialogButtonBox QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3367d6, stop:1 #2a56c6);
+            }
+            QDialogButtonBox QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2a56c6, stop:1 #1e3a8a);
+            }
+            QDialogButtonBox QPushButton[text="Cancel"] {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #6c757d, stop:1 #5a6268);
+            }
+            QDialogButtonBox QPushButton[text="Cancel"]:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #5a6268, stop:1 #495057);
+            }
+        """)
+        
         # Add to layout
         layout.addWidget(tts_group)
         layout.addWidget(url_group)
         layout.addWidget(general_group)
         layout.addWidget(test_button)
         layout.addWidget(self.test_status_label)
+        layout.addStretch()
         layout.addWidget(button_box)
-        
+    
     def load_settings(self):
         # # Load and set values
         # self.redis_host_input.setText(self.settings.value("redis/host", "busylight.signalwire.me"))
