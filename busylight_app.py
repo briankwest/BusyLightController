@@ -1587,15 +1587,20 @@ class LightController(QObject):
 class BusylightApp(QMainWindow):
     def __init__(self, username=None, password=None, redis_info=None):
         super().__init__()
-        
-        # Store user credentials and Redis info
         self.username = username
         self.password = password
         self.redis_info = redis_info
+        self.group_statuses = {}
+        self.group_widgets = {}
+        self.redis_worker = None
+        self.worker_thread = None
+        self.light_controller = None
+        self.tray_icon = None
+        self.tray_blink_timer = None
+        self.is_tray_visible = True
         
-        # Track group statuses
-        self.group_statuses = {}  # {group: {status, timestamp, data}}
-        self.group_widgets = {}   # {group: {widget, status_label, timestamp_label}}
+        # Flag to prevent TTS during app initialization
+        self.is_initializing = True
         
         # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
@@ -1606,13 +1611,13 @@ class BusylightApp(QMainWindow):
         self.tray_blink_timer.timeout.connect(self.toggle_tray_icon)
         self.tray_icon_visible = True
         
-        # Create the light controller first
-        self.light_controller = LightController()
+        # Initialize the light controller first
+        self.light_controller = LightController(self)
         
-        # Create UI after controller exists
+        # Create the main UI
         self.create_main_ui()
         
-        # Setup system tray
+        # Set up system tray
         self.setup_tray()
         
         # Set up connections to UI after both UI and controller exist
@@ -1620,21 +1625,15 @@ class BusylightApp(QMainWindow):
         self.light_controller.color_changed.connect(self.update_status_display)
         self.light_controller.device_status_changed.connect(self.update_device_status)
         
-        # Create Redis worker thread with Redis info from login
-        self.worker_thread = QThread()
-        self.redis_worker = RedisWorker(redis_info=self.redis_info)
-        self.redis_worker.moveToThread(self.worker_thread)
-        self.redis_worker.status_updated.connect(self.light_controller.set_status)
-        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
-        self.redis_worker.log_message.connect(self.add_log)
-        self.redis_worker.ticket_received.connect(self.process_ticket_info)
-        self.redis_worker.group_status_updated.connect(self.update_group_status)
-        self.worker_thread.started.connect(self.redis_worker.run)
-        self.worker_thread.start()
+        # Start the Redis worker after UI is ready
+        self.start_redis_worker()
         
         # Explicitly refresh connection on startup after UI is ready
         QTimer.singleShot(100, self.manually_connect_device)
         
+        # Mark initialization as complete after a short delay to allow startup events to process
+        QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
+    
     def create_main_ui(self):
         """Create the main UI components with dynamic group status displays"""
         main_widget = QWidget()
@@ -1925,11 +1924,6 @@ class BusylightApp(QMainWindow):
         # Set window size
         self.resize(900, 800)
         
-        # Set up connections
-        self.light_controller.log_message.connect(self.add_log)
-        self.light_controller.color_changed.connect(self.update_status_display)
-        self.light_controller.device_status_changed.connect(self.update_device_status)
-    
     def setup_tray(self):
         # Create system tray icon
         self.tray_icon = QSystemTrayIcon(self)
@@ -2057,11 +2051,16 @@ class BusylightApp(QMainWindow):
             self.restart_worker()
     
     def restart_worker(self):
-        """Restart the worker thread with new settings"""
-        # Stop current worker
-        self.redis_worker.stop()
-        self.worker_thread.quit()
-        self.worker_thread.wait()
+        """Restart the Redis worker with current settings"""
+        # Set initialization flag to prevent TTS during restart
+        self.is_initializing = True
+        
+        # Stop existing worker if it exists
+        if hasattr(self, 'redis_worker') and self.redis_worker:
+            self.redis_worker.stop()
+        if hasattr(self, 'worker_thread') and self.worker_thread:
+            self.worker_thread.quit()
+            self.worker_thread.wait(1000)  # Wait up to 1 second
         
         # Create new worker with updated settings
         self.worker_thread = QThread()
@@ -2077,6 +2076,9 @@ class BusylightApp(QMainWindow):
         # Start the new worker
         self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
         self.worker_thread.start()
+        
+        # Complete initialization after a delay to allow historical events to load
+        QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
     
     def on_tray_status_changed(self):
         action = self.sender()
@@ -2413,6 +2415,55 @@ class BusylightApp(QMainWindow):
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error executing TTS command: {e}")
     
+    def speak_group_status_event(self, group, status, data):
+        """Speak group status events using text-to-speech"""
+        # Skip TTS during app initialization to avoid speaking historical events
+        if self.is_initializing:
+            return
+            
+        # Load TTS settings
+        settings = QSettings("Busylight", "BusylightController")
+        tts_enabled = settings.value("tts/enabled", False, type=bool)
+        
+        if not tts_enabled:
+            return
+        
+        try:
+            # Create a human-readable message for the status event
+            status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
+            source = data.get('source', 'Unknown')
+            reason = data.get('reason', '')
+            
+            # Build the TTS message
+            if reason:
+                tts_message = f"Group {group} status changed to {status_name} by {source}. Reason: {reason}"
+            else:
+                tts_message = f"Group {group} status changed to {status_name} by {source}"
+            
+            # Use platform-specific approaches for safer TTS
+            system = platform.system()
+            
+            if system == "Darwin":  # macOS
+                # Use macOS say command directly with list arguments
+                subprocess.Popen(["say", tts_message], shell=False)
+                self.add_log(f"[{get_timestamp()}] Speaking group status event using macOS say command")
+            
+            elif system == "Windows":
+                # Use PowerShell with safer argument passing
+                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
+                ps_script = ps_script.format(tts_message.replace("'", "''"))  # PowerShell escape single quotes
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                self.add_log(f"[{get_timestamp()}] Speaking group status event using Windows speech")
+            
+            else:  # Linux and other platforms - attempt to use festival
+                # Safer approach for Linux using pipes instead of shell
+                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
+                process.communicate(tts_message.encode())
+                self.add_log(f"[{get_timestamp()}] Speaking group status event using festival")
+                
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error executing TTS for group status event: {e}")
+    
     def open_ticket_url(self, url):
         """Open the ticket URL using a secure method"""
         # Load URL settings
@@ -2443,6 +2494,9 @@ class BusylightApp(QMainWindow):
             'timestamp': get_timestamp(),
             'data': data
         }
+        
+        # Trigger text-to-speech announcement for this status event if TTS is enabled
+        self.speak_group_status_event(group, status, data)
         
         # Update the UI widget for this group
         if group in self.group_widgets:
@@ -2619,6 +2673,26 @@ class BusylightApp(QMainWindow):
         
         # Open the dialog
         self.on_group_clicked(group)
+
+    def start_redis_worker(self):
+        """Start the Redis worker thread"""
+        if self.redis_info:
+            # Create Redis worker thread with Redis info from login
+            self.worker_thread = QThread()
+            self.redis_worker = RedisWorker(redis_info=self.redis_info)
+            self.redis_worker.moveToThread(self.worker_thread)
+            self.redis_worker.status_updated.connect(self.light_controller.set_status)
+            self.redis_worker.connection_status.connect(self.update_redis_connection_status)
+            self.redis_worker.log_message.connect(self.add_log)
+            self.redis_worker.ticket_received.connect(self.process_ticket_info)
+            self.redis_worker.group_status_updated.connect(self.update_group_status)
+            self.worker_thread.started.connect(self.redis_worker.run)
+            self.worker_thread.start()
+
+    def complete_initialization(self):
+        """Complete initialization tasks after the UI is ready"""
+        self.is_initializing = False
+        self.add_log(f"[{get_timestamp()}] Initialization complete - TTS now active for new events")
 
 # Main application
 def main():
