@@ -2617,25 +2617,12 @@ class BusylightApp(QMainWindow):
                 # Log the status change request
                 self.add_log(f"[{get_timestamp()}] Status change requested for group '{result['group']}': {result['action']} - {result['reason']}")
                 
-                # Here you could send the status change to Redis or your API
-                # For now, we'll just update the local display
-                self.simulate_status_change(result['group'], result['action'], result['reason'])
+                # The API call is made in the dialog's submit_to_api method
+                # The real event will come back from Redis, so no need to simulate locally
+                # self.simulate_status_change(result['group'], result['action'], result['reason'])  # Removed to prevent duplicates
     
-    def simulate_status_change(self, group, action, reason):
-        """Simulate a status change (replace with actual API call)"""
-        # Create mock data for the status change
-        mock_data = {
-            'group': group,
-            'status': action,
-            'reason': reason,
-            'timestamp': get_timestamp()
-        }
-        
-        # Update the group status display
-        self.update_group_status(group, action, mock_data)
-        
-        # Also update the light controller
-        self.light_controller.set_status(action, log_action=True)
+    # simulate_status_change method removed to prevent duplicate events
+    # The real events now come from Redis after API submission
     
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
