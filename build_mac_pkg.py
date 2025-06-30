@@ -93,7 +93,7 @@ a = Analysis(
     ['{MAIN_SCRIPT}'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.'), ('{icns_file}', '.')],
+    datas=[('icon.png', '.'), ('{icns_file}', '.'), ('sw.jpeg', '.')],
     hiddenimports=['webbrowser'],
     hookspath=[],
     hooksconfig={{}},

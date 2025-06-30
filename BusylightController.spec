@@ -5,7 +5,7 @@ a = Analysis(
     ['busylight_app_main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icon.png', '.')],
+    datas=[('icon.png', '.'), ('sw.jpeg', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

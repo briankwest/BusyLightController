@@ -15,7 +15,7 @@ tmp_ret = collect_all('busylight')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # Add the icon and other resource files
-datas += [('icon.png', '.')]
+datas += [('icon.png', '.'), ('sw.jpeg', '.')]
 
 a = Analysis(
     ['busylight_app_main.py'],

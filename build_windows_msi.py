@@ -124,7 +124,7 @@ a = Analysis(
     ['{script_basename}'],
     pathex=['{script_dir}'],
     binaries=[],
-    datas=[('{ICON_FILE}', '.')],
+    datas=[('{ICON_FILE}', '.'), ('sw.jpeg', '.')],
     hiddenimports=['webbrowser', 'usb', 'hid', 'pyusb', 'busylight_for_humans', 'PySide6', 'redis', 'charset_normalizer', 'importlib_metadata', 'certifi'],
     hookspath=[],
     hooksconfig={{}},
