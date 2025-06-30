@@ -41,6 +41,72 @@ dotenv.load_dotenv()
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+def get_resource_path(relative_path):
+    """Get the absolute path to a resource file, works for dev and PyInstaller bundle"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # When running in development, use the current directory
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
+
+def is_dark_mode():
+    """Detect if the system is in dark mode"""
+    try:
+        # Check Qt's palette to determine if we're in dark mode
+        app = QApplication.instance()
+        if app:
+            palette = app.palette()
+            window_color = palette.color(palette.Window)
+            # If the window background is dark (sum of RGB < 384), we're in dark mode
+            return (window_color.red() + window_color.green() + window_color.blue()) < 384
+    except:
+        pass
+    return False
+
+def get_adaptive_colors():
+    """Get colors that adapt to dark/light mode"""
+    if is_dark_mode():
+        return {
+            'bg_primary': '#2b2b2b',
+            'bg_secondary': '#3c3c3c', 
+            'bg_tertiary': '#4a4a4a',
+            'text_primary': '#ffffff',
+            'text_secondary': '#b0b0b0',
+            'text_muted': '#888888',
+            'border_primary': '#555555',
+            'border_secondary': '#666666',
+            'accent_blue': '#4a9eff',
+            'accent_green': '#4caf50',
+            'accent_red': '#f44336',
+            'accent_orange': '#ff9800',
+            'input_bg': '#404040',
+            'input_border': '#606060',
+            'button_bg': '#505050',
+            'hover_bg': '#606060'
+        }
+    else:
+        return {
+            'bg_primary': '#ffffff',
+            'bg_secondary': '#f8f9fa',
+            'bg_tertiary': '#e9ecef',
+            'text_primary': '#202124',
+            'text_secondary': '#495057',
+            'text_muted': '#6c757d',
+            'border_primary': '#000000',
+            'border_secondary': '#dee2e6',
+            'accent_blue': '#4285f4',
+            'accent_green': '#28a745',
+            'accent_red': '#dc3545',
+            'accent_orange': '#fd7e14',
+            'input_bg': '#ffffff',
+            'input_border': '#e9ecef',
+            'button_bg': '#f8f9fa',
+            'hover_bg': '#f1f3f4'
+        }
+
 # Login dialog class
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
@@ -52,8 +118,14 @@ class LoginDialog(QDialog):
         # Center the dialog on screen
         self.center_on_screen()
         
+        # Initialize QSettings for credential storage
+        self.settings = QSettings("Busylight", "BusylightController")
+        
         # Setup UI
         self.setup_ui()
+        
+        # Load saved credentials
+        self.load_saved_credentials()
         
         # Store credentials
         self.username = ""
@@ -69,11 +141,63 @@ class LoginDialog(QDialog):
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
+        
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+        
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QWidget {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QLabel {{
+                color: {colors['text_primary']};
+            }}
+            QLineEdit {{
+                background-color: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                border-radius: 4px;
+                padding: 8px;
+                color: {colors['text_primary']};
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
+            }}
+            QPushButton {{
+                background-color: {colors['button_bg']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                padding: 6px 12px;
+                color: {colors['text_primary']};
+            }}
+            QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+            }}
+            QDialogButtonBox QPushButton {{
+                background-color: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: 500;
+                min-width: 80px;
+            }}
+            QDialogButtonBox QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
 
         # Add logo image
         logo_label = QLabel()
-        if os.path.exists("sw.jpeg"):
-            pixmap = QPixmap("sw.jpeg")
+        logo_path = get_resource_path("sw.jpeg")
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
             # Scale the image to a reasonable size (e.g., 200px wide, maintaining aspect ratio)
             scaled_pixmap = pixmap.scaled(200, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             logo_label.setPixmap(scaled_pixmap)
@@ -83,14 +207,14 @@ class LoginDialog(QDialog):
             # If image doesn't exist, show a placeholder or skip
             logo_label.setText("(Logo not found)")
             logo_label.setAlignment(Qt.AlignCenter)
-            logo_label.setStyleSheet("color: gray; font-style: italic;")
+            logo_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic;")
             layout.addWidget(logo_label)
         
         # Title label
         title_label = QLabel("Please enter your B.L.A.S.S.T. credentials")
         title_label.setWordWrap(True)
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        title_label.setStyleSheet(f"font-weight: bold; margin-bottom: 10px; color: {colors['text_primary']};")
         layout.addWidget(title_label)
         
         # Form layout for credentials
@@ -99,7 +223,10 @@ class LoginDialog(QDialog):
         # Username input
         self.username_input = QLineEdit()
         #self.username_input.setPlaceholderText("Enter your username")
-        form_layout.addRow("Username:", self.username_input)
+        
+        username_label = QLabel("Username:")
+        username_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: 500;")
+        form_layout.addRow(username_label, self.username_input)
         
         # Password input with show/hide button - create the layout first
         password_layout = QHBoxLayout()
@@ -116,7 +243,9 @@ class LoginDialog(QDialog):
         password_layout.addWidget(self.show_password_button)
         
         # Add the password layout directly to the form
-        form_layout.addRow("Password:", password_layout)
+        password_label = QLabel("Password:")
+        password_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: 500;")
+        form_layout.addRow(password_label, password_layout)
         
         layout.addLayout(form_layout)
                 
@@ -167,6 +296,9 @@ class LoginDialog(QDialog):
         self.username = username
         self.password = password
         
+        # Save username for future logins (password is not saved for security)
+        self.save_credentials(username)
+        
         # Accept the dialog
         self.accept()
         
@@ -192,6 +324,42 @@ class LoginDialog(QDialog):
     def get_credentials(self):
         """Return the entered credentials"""
         return self.username, self.password, getattr(self, 'redis_info', None)
+    
+    def load_saved_credentials(self):
+        """Load previously saved credentials if they exist"""
+        try:
+            # Load saved username
+            saved_username = self.settings.value("credentials/username", "")
+            if saved_username:
+                self.username_input.setText(saved_username)
+                # If username exists, focus on password field
+                self.password_input.setFocus()
+                print(f"[{get_timestamp()}] Loaded saved username: {saved_username}")
+            
+            # Note: We don't save passwords for security reasons
+            # Users will need to re-enter their password each time
+            
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error loading saved credentials: {e}")
+    
+    def save_credentials(self, username):
+        """Save credentials to settings (username only for security)"""
+        try:
+            # Only save username for convenience, never save passwords
+            self.settings.setValue("credentials/username", username)
+            self.settings.sync()
+            print(f"[{get_timestamp()}] Username saved for future logins")
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error saving credentials: {e}")
+    
+    def clear_saved_credentials(self):
+        """Clear saved credentials from settings"""
+        try:
+            self.settings.remove("credentials/username")
+            self.settings.sync()
+            print(f"[{get_timestamp()}] Saved credentials cleared")
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error clearing credentials: {e}")
 
 # Configuration dialog class
 class ConfigDialog(QDialog):
@@ -211,6 +379,21 @@ class ConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
         layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+        
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QWidget {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
 
         # Text-to-Speech settings group
         tts_group = QGroupBox("Text-to-Speech Settings")
@@ -221,62 +404,62 @@ class ConfigDialog(QDialog):
         bold_font.setPointSize(12)
         tts_group.setFont(bold_font)
         
-        tts_group.setStyleSheet("""
-            QGroupBox {
+        tts_group.setStyleSheet(f"""
+            QGroupBox {{
                 border: none;
                 border-radius: 12px;
                 margin: 8px;
                 padding: 16px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f8f9fa);
-                border: 2px solid #000000;
-            }
-            QGroupBox::title {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 16px;
                 padding: 0 8px 0 8px;
-                color: #202124;
+                color: {colors['text_primary']};
                 font-weight: 800;
                 font-size: 16px;
-            }
+            }}
         """)
         
         tts_layout = QFormLayout(tts_group)
         tts_layout.setSpacing(12)
         
         self.tts_enabled_checkbox = QCheckBox()
-        self.tts_enabled_checkbox.setStyleSheet("""
-            QCheckBox {
+        self.tts_enabled_checkbox.setStyleSheet(f"""
+            QCheckBox {{
                 font-size: 14px;
-                color: #202124;
-            }
-            QCheckBox::indicator {
+                color: {colors['text_primary']};
+            }}
+            QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
-                border: 2px solid #dee2e6;
+                border: 2px solid {colors['border_secondary']};
                 border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #4285f4;
-                border-color: #4285f4;
-            }
+                background: {colors['input_bg']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent_blue']};
+                border-color: {colors['accent_blue']};
+            }}
         """)
         
         self.tts_command_input = QLineEdit()
-        self.tts_command_input.setStyleSheet("""
-            QLineEdit {
+        self.tts_command_input.setStyleSheet(f"""
+            QLineEdit {{
                 padding: 8px 12px;
-                border: 1px solid #e9ecef;
+                border: 1px solid {colors['input_border']};
                 border-radius: 8px;
-                background: #ffffff;
+                background: {colors['input_bg']};
                 font-size: 13px;
-                color: #495057;
-            }
-            QLineEdit:focus {
-                border-color: #4285f4;
+                color: {colors['text_secondary']};
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
                 outline: none;
-            }
+            }}
         """)
         
         # Create a layout for command input and test button
@@ -287,25 +470,24 @@ class ConfigDialog(QDialog):
         self.tts_test_button = QPushButton("Test")
         self.tts_test_button.setToolTip("Test the TTS command")
         self.tts_test_button.clicked.connect(self.test_tts_command)
-        self.tts_test_button.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #4285f4, stop:1 #3367d6);
+        self.tts_test_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
                 color: white;
                 border: none;
                 padding: 8px 16px;
                 border-radius: 6px;
                 font-weight: 600;
                 font-size: 13px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #3367d6, stop:1 #2a56c6);
-            }
-            QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2a56c6, stop:1 #1e3a8a);
-            }
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
         """)
         tts_cmd_layout.addWidget(self.tts_test_button)
         
@@ -314,7 +496,7 @@ class ConfigDialog(QDialog):
         
         # Add help text
         tts_help = QLabel("Use {summary} as a placeholder for the ticket summary")
-        tts_help.setStyleSheet("color: #6c757d; font-style: italic; font-size: 12px; padding: 4px 0;")
+        tts_help.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; font-size: 12px; padding: 4px 0;")
         tts_layout.addRow("", tts_help)
         
         # URL Handler settings group
@@ -323,62 +505,62 @@ class ConfigDialog(QDialog):
         # Set bold font for the title
         url_group.setFont(bold_font)
         
-        url_group.setStyleSheet("""
-            QGroupBox {
+        url_group.setStyleSheet(f"""
+            QGroupBox {{
                 border: none;
                 border-radius: 12px;
                 margin: 8px;
                 padding: 16px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f8f9fa);
-                border: 2px solid #000000;
-            }
-            QGroupBox::title {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 16px;
                 padding: 0 8px 0 8px;
-                color: #202124;
+                color: {colors['text_primary']};
                 font-weight: 800;
                 font-size: 16px;
-            }
+            }}
         """)
         
         url_layout = QFormLayout(url_group)
         url_layout.setSpacing(12)
         
         self.url_enabled_checkbox = QCheckBox()
-        self.url_enabled_checkbox.setStyleSheet("""
-            QCheckBox {
+        self.url_enabled_checkbox.setStyleSheet(f"""
+            QCheckBox {{
                 font-size: 14px;
-                color: #202124;
-            }
-            QCheckBox::indicator {
+                color: {colors['text_primary']};
+            }}
+            QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
-                border: 2px solid #dee2e6;
+                border: 2px solid {colors['border_secondary']};
                 border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #4285f4;
-                border-color: #4285f4;
-            }
+                background: {colors['input_bg']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent_blue']};
+                border-color: {colors['accent_blue']};
+            }}
         """)
         
         self.url_command_input = QLineEdit()
-        self.url_command_input.setStyleSheet("""
-            QLineEdit {
+        self.url_command_input.setStyleSheet(f"""
+            QLineEdit {{
                 padding: 8px 12px;
-                border: 1px solid #e9ecef;
+                border: 1px solid {colors['input_border']};
                 border-radius: 8px;
-                background: #ffffff;
+                background: {colors['input_bg']};
                 font-size: 13px;
-                color: #495057;
-            }
-            QLineEdit:focus {
-                border-color: #4285f4;
+                color: {colors['text_secondary']};
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
                 outline: none;
-            }
+            }}
         """)
         
         # Create a layout for command input and test button
@@ -389,25 +571,24 @@ class ConfigDialog(QDialog):
         self.url_test_button = QPushButton("Test")
         self.url_test_button.setToolTip("Test the URL command")
         self.url_test_button.clicked.connect(self.test_url_command)
-        self.url_test_button.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #4285f4, stop:1 #3367d6);
+        self.url_test_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
                 color: white;
                 border: none;
                 padding: 8px 16px;
                 border-radius: 6px;
                 font-weight: 600;
                 font-size: 13px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #3367d6, stop:1 #2a56c6);
-            }
-            QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2a56c6, stop:1 #1e3a8a);
-            }
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
         """)
         url_cmd_layout.addWidget(self.url_test_button)
         
@@ -416,7 +597,7 @@ class ConfigDialog(QDialog):
         
         # Add help text
         url_help = QLabel("Use {url} as a placeholder for the ticket URL")
-        url_help.setStyleSheet("color: #6c757d; font-style: italic; font-size: 12px; padding: 4px 0;")
+        url_help.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; font-size: 12px; padding: 4px 0;")
         url_layout.addRow("", url_help)
         
         # General settings group
@@ -425,85 +606,56 @@ class ConfigDialog(QDialog):
         # Set bold font for the title
         general_group.setFont(bold_font)
         
-        general_group.setStyleSheet("""
-            QGroupBox {
+        general_group.setStyleSheet(f"""
+            QGroupBox {{
                 border: none;
                 border-radius: 12px;
                 margin: 8px;
                 padding: 16px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f8f9fa);
-                border: 2px solid #000000;
-            }
-            QGroupBox::title {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 16px;
                 padding: 0 8px 0 8px;
-                color: #202124;
+                color: {colors['text_primary']};
                 font-weight: 800;
                 font-size: 16px;
-            }
+            }}
         """)
         
         general_layout = QFormLayout(general_group)
         general_layout.setSpacing(12)
         
-        self.start_minimized_checkbox = QCheckBox()
-        self.start_minimized_checkbox.setStyleSheet("""
-            QCheckBox {
+        # Common checkbox style
+        checkbox_style = f"""
+            QCheckBox {{
                 font-size: 14px;
-                color: #202124;
-            }
-            QCheckBox::indicator {
+                color: {colors['text_primary']};
+            }}
+            QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
-                border: 2px solid #dee2e6;
+                border: 2px solid {colors['border_secondary']};
                 border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #4285f4;
-                border-color: #4285f4;
-            }
-        """)
+                background: {colors['input_bg']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent_blue']};
+                border-color: {colors['accent_blue']};
+            }}
+        """
+        
+        self.start_minimized_checkbox = QCheckBox()
+        self.start_minimized_checkbox.setStyleSheet(checkbox_style)
         
         self.autostart_checkbox = QCheckBox()
-        self.autostart_checkbox.setStyleSheet("""
-            QCheckBox {
-                font-size: 14px;
-                color: #202124;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid #dee2e6;
-                border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #4285f4;
-                border-color: #4285f4;
-            }
-        """)
+        self.autostart_checkbox.setStyleSheet(checkbox_style)
         
         self.simulation_mode_checkbox = QCheckBox()
-        self.simulation_mode_checkbox.setStyleSheet("""
-            QCheckBox {
-                font-size: 14px;
-                color: #202124;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border: 2px solid #dee2e6;
-                border-radius: 4px;
-                background: #ffffff;
-            }
-            QCheckBox::indicator:checked {
-                background: #4285f4;
-                border-color: #4285f4;
-            }
-        """)
+        self.simulation_mode_checkbox.setStyleSheet(checkbox_style)
         
         general_layout.addRow("Start Minimized:", self.start_minimized_checkbox)
         general_layout.addRow("Run at System Startup:", self.autostart_checkbox)
@@ -512,10 +664,9 @@ class ConfigDialog(QDialog):
         # Test connection button
         test_button = QPushButton("Test Connection")
         test_button.clicked.connect(self.test_connection)
-        test_button.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #28a745, stop:1 #218838);
+        test_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_green']};
                 color: white;
                 border: none;
                 padding: 12px 24px;
@@ -523,15 +674,15 @@ class ConfigDialog(QDialog):
                 font-weight: 600;
                 font-size: 14px;
                 margin: 8px 0;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #218838, stop:1 #1e7e34);
-            }
-            QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1e7e34, stop:1 #155724);
-            }
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
         """)
         
         # Add status label for test results
@@ -553,10 +704,9 @@ class ConfigDialog(QDialog):
         button_box.rejected.connect(self.reject)
         
         # Style the button box
-        button_box.setStyleSheet("""
-            QDialogButtonBox QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #4285f4, stop:1 #3367d6);
+        button_box.setStyleSheet(f"""
+            QDialogButtonBox QPushButton {{
+                background: {colors['accent_blue']};
                 color: white;
                 border: none;
                 padding: 10px 20px;
@@ -564,23 +714,23 @@ class ConfigDialog(QDialog):
                 font-weight: 600;
                 font-size: 13px;
                 min-width: 80px;
-            }
-            QDialogButtonBox QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #3367d6, stop:1 #2a56c6);
-            }
-            QDialogButtonBox QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #2a56c6, stop:1 #1e3a8a);
-            }
-            QDialogButtonBox QPushButton[text="Cancel"] {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #6c757d, stop:1 #5a6268);
-            }
-            QDialogButtonBox QPushButton[text="Cancel"]:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #5a6268, stop:1 #495057);
-            }
+            }}
+            QDialogButtonBox QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QDialogButtonBox QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+            QDialogButtonBox QPushButton[text="Cancel"] {{
+                background: {colors['text_muted']};
+                color: white;
+            }}
+            QDialogButtonBox QPushButton[text="Cancel"]:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
         """)
         
         # Add to layout
@@ -941,15 +1091,32 @@ class StatusChangeDialog(QDialog):
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+        
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
         
         # Title label
         title_label = QLabel(f"Change {self.current_group} Status")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 10px;")
+        title_label.setStyleSheet(f"font-weight: bold; font-size: 16px; margin-bottom: 10px; color: {colors['text_primary']};")
         layout.addWidget(title_label)
         
         # Form layout for controls
         form_layout = QFormLayout()
+        form_layout.setSpacing(12)
+        
+        # Style form labels
+        form_layout.setLabelAlignment(Qt.AlignRight)
         
         # Actions dropdown
         self.action_combo = QComboBox()
@@ -957,17 +1124,74 @@ class StatusChangeDialog(QDialog):
         self.action_combo.addItem("Warning", "warning") 
         self.action_combo.addItem("Acknowledged", "alert-acked")
         self.action_combo.addItem("Alert", "alert")
-        form_layout.addRow("Action:", self.action_combo)
+        self.action_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 14px;
+                color: {colors['text_primary']};
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid {colors['text_secondary']};
+                margin-right: 5px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                selection-background-color: {colors['accent_blue']};
+                selection-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        
+        action_label = QLabel("Action:")
+        action_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: 500;")
+        form_layout.addRow(action_label, self.action_combo)
         
         # Reason text box
         self.reason_input = QLineEdit()
         self.reason_input.setPlaceholderText("Enter reason for status change...")
-        form_layout.addRow("Reason:", self.reason_input)
+        self.reason_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 14px;
+                color: {colors['text_primary']};
+            }}
+            QLineEdit:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
+                outline: none;
+            }}
+        """)
+        
+        reason_label = QLabel("Reason:")
+        reason_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: 500;")
+        form_layout.addRow(reason_label, self.reason_input)
         
         # Group display (read-only, showing the clicked group)
         self.group_label = QLabel(self.current_group if self.current_group else "Unknown")
-        self.group_label.setStyleSheet("font-weight: bold; color: blue; padding: 5px; border: 1px solid lightgray; border-radius: 3px; background-color: #f0f0f0;")
-        form_layout.addRow("Group:", self.group_label)
+        self.group_label.setStyleSheet(f"font-weight: bold; color: {colors['accent_blue']}; padding: 8px 12px; border: 1px solid {colors['border_secondary']}; border-radius: 6px; background-color: {colors['bg_secondary']};")
+        
+        group_label = QLabel("Group:")
+        group_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: 500;")
+        form_layout.addRow(group_label, self.group_label)
         
         layout.addLayout(form_layout)
         
@@ -977,6 +1201,36 @@ class StatusChangeDialog(QDialog):
         submit_button.setText("Submit")
         cancel_button = button_box.button(QDialogButtonBox.Cancel)
         cancel_button.setText("Cancel")
+        
+        # Style the button box
+        button_box.setStyleSheet(f"""
+            QDialogButtonBox QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+                min-width: 80px;
+            }}
+            QDialogButtonBox QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QDialogButtonBox QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+            QDialogButtonBox QPushButton[text="Cancel"] {{
+                background: {colors['text_muted']};
+                color: white;
+            }}
+            QDialogButtonBox QPushButton[text="Cancel"]:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
         
         button_box.accepted.connect(self.accept_change)
         button_box.rejected.connect(self.reject)
@@ -1604,7 +1858,14 @@ class BusylightApp(QMainWindow):
         
         # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
-        self.setWindowIcon(QIcon("icon.png"))
+        icon_path = get_resource_path("icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            # Fallback icon
+            pixmap = QPixmap(64, 64)
+            pixmap.fill(QColor(0, 255, 0))
+            self.setWindowIcon(QIcon(pixmap))
         
         # Initialize blinking variables
         self.tray_blink_timer = QTimer(self)
@@ -1639,6 +1900,29 @@ class BusylightApp(QMainWindow):
         main_widget = QWidget()
         layout = QVBoxLayout()
         
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+        
+        # Set the main window background color
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QWidget {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        
+        # Set the main widget background
+        main_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        
         # User info section
         user_group = QGroupBox("User Information")
         
@@ -1648,30 +1932,30 @@ class BusylightApp(QMainWindow):
         bold_font.setPointSize(12)  # Larger size for prominence
         user_group.setFont(bold_font)
         
-        user_group.setStyleSheet("""
-            QGroupBox {
+        user_group.setStyleSheet(f"""
+            QGroupBox {{
                 border: none;
                 border-radius: 12px;
                 margin: 8px;
                 padding: 16px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f8f9fa);
-                border: 2px solid #000000;
-            }
-            QGroupBox::title {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 16px;
                 padding: 0 8px 0 8px;
-                color: #202124;
+                color: {colors['text_primary']};
                 font-weight: 800;
                 font-size: 16px;
-            }
+            }}
         """)
         user_layout = QHBoxLayout()  # Changed to horizontal layout
         
         if self.username:
             self.user_label = QLabel(f"Logged in as: {self.username}")
-            self.user_label.setStyleSheet("color: #4285f4; font-weight: 500; font-size: 14px;")
+            self.user_label.setStyleSheet(f"color: {colors['accent_blue']}; font-weight: 500; font-size: 14px;")
             user_layout.addWidget(self.user_label)
         
         # Add some spacing
@@ -1684,12 +1968,12 @@ class BusylightApp(QMainWindow):
         device_layout.setSpacing(8)
         
         self.device_label = QLabel("Busylight: Disconnected")
-        self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
+        self.device_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
         device_layout.addWidget(self.device_label)
         
         # Connection status dot
         self.connection_dot = QLabel("●")
-        self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
+        self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
         self.connection_dot.setToolTip("Busylight: Disconnected")
         device_layout.addWidget(self.connection_dot)
         
@@ -1705,12 +1989,12 @@ class BusylightApp(QMainWindow):
         redis_layout.setSpacing(8)
         
         self.redis_connection_label = QLabel("Disconnected")
-        self.redis_connection_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
+        self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
         redis_layout.addWidget(self.redis_connection_label)
         
         # Redis connection status dot
         self.redis_connection_dot = QLabel("●")
-        self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
+        self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
         self.redis_connection_dot.setToolTip("Disconnected")
         redis_layout.addWidget(self.redis_connection_dot)
         
@@ -1729,12 +2013,53 @@ class BusylightApp(QMainWindow):
             bold_font.setPointSize(12)  # Larger size for prominence
             groups_group.setFont(bold_font)
             
+            # Apply adaptive styling to the main Group Status Monitor
+            groups_group.setStyleSheet(f"""
+                QGroupBox {{
+                    border: none;
+                    border-radius: 12px;
+                    margin: 8px;
+                    padding: 16px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                    border: 2px solid {colors['border_secondary']};
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 16px;
+                    padding: 0 8px 0 8px;
+                    color: {colors['text_primary']};
+                    font-weight: 800;
+                    font-size: 16px;
+                }}
+            """)
+            
             groups_layout = QVBoxLayout()
             
             # Create a scrollable area for groups
             scroll_area = QScrollArea()
             scroll_area.setWidgetResizable(True)
+            scroll_area.setStyleSheet(f"""
+                QScrollArea {{
+                    border: none;
+                    background: transparent;
+                }}
+                QScrollBar:vertical {{
+                    background: {colors['bg_secondary']};
+                    width: 12px;
+                    border-radius: 6px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {colors['text_muted']};
+                    border-radius: 6px;
+                    min-height: 20px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {colors['accent_blue']};
+                }}
+            """)
             scroll_widget = QWidget()
+            scroll_widget.setStyleSheet(f"background: transparent;")
             scroll_layout = QVBoxLayout(scroll_widget)
             
             # Create status widget for each group
@@ -1747,28 +2072,29 @@ class BusylightApp(QMainWindow):
                 bold_font.setPointSize(12)  # Larger size for prominence
                 group_widget.setFont(bold_font)
                 
-                group_widget.setStyleSheet("""
-                    QGroupBox {
+                group_widget.setStyleSheet(f"""
+                    QGroupBox {{
+                        border: none;
                         border-radius: 12px;
                         margin: 8px;
                         padding: 16px;
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 #ffffff, stop:1 #f8f9fa);
-                        border: 2px solid black;
-                    }
-                    QGroupBox:hover {
+                            stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                        border: 2px solid {colors['border_secondary']};
+                    }}
+                    QGroupBox:hover {{
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 #ffffff, stop:1 #f1f3f4);
-                        border: 1px solid #4285f4;
-                    }
-                    QGroupBox::title {
+                            stop:0 {colors['bg_primary']}, stop:1 {colors['hover_bg']});
+                        border: 2px solid {colors['accent_blue']};
+                    }}
+                    QGroupBox::title {{
                         subcontrol-origin: margin;
                         left: 16px;
                         padding: 0 8px 0 8px;
-                        color: #202124;
+                        color: {colors['text_primary']};
                         font-weight: 800;
                         font-size: 16px;
-                    }
+                    }}
                 """)
                 group_layout = QHBoxLayout() 
                 group_layout.setSpacing(16)
@@ -1783,7 +2109,7 @@ class BusylightApp(QMainWindow):
                 
                 # Square status color bar with modern styling
                 status_label = QLabel("Unknown")
-                status_label.setStyleSheet("""
+                status_label.setStyleSheet(f"""
                     font-size: 11px;
                     font-weight: 700;
                     padding: 12px;
@@ -1793,9 +2119,9 @@ class BusylightApp(QMainWindow):
                     max-width: 90px;
                     max-height: 90px;
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #f8f9fa, stop:1 #e9ecef);
-                    border: 2px solid #dee2e6;
-                    color: #6c757d;
+                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
+                    border: 2px solid {colors['border_secondary']};
+                    color: {colors['text_muted']};
                 """)
                 status_label.setAlignment(Qt.AlignCenter)
                 status_label.setFixedSize(90, 90)
@@ -1803,7 +2129,7 @@ class BusylightApp(QMainWindow):
                 
                 # Timestamp label
                 timestamp_label = QLabel("Last Update: Never")
-                timestamp_label.setStyleSheet("color: gray; font-size: 9px; font-style: italic;")
+                timestamp_label.setStyleSheet(f"color: {colors['text_muted']}; font-size: 9px; font-style: italic;")
                 timestamp_label.setAlignment(Qt.AlignCenter)
                 status_container_layout.addWidget(timestamp_label, alignment=Qt.AlignCenter)
                 
@@ -1817,9 +2143,9 @@ class BusylightApp(QMainWindow):
                 
                 # Event history label with modern styling
                 event_history_label = QLabel("Event History")
-                event_history_label.setStyleSheet("""
+                event_history_label.setStyleSheet(f"""
                     font-weight: 600;
-                    color: #202124;
+                    color: {colors['text_primary']};
                     font-size: 12px;
                     padding: 4px 0;
                 """)
@@ -1829,16 +2155,16 @@ class BusylightApp(QMainWindow):
                 event_history_text = QTextEdit()
                 event_history_text.setReadOnly(True)
                 event_history_text.setMinimumHeight(90)
-                event_history_text.setStyleSheet("""
+                event_history_text.setStyleSheet(f"""
                     font-size: 10px;
                     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                    background: #ffffff;
-                    border: 1px solid #e9ecef;
+                    background: {colors['input_bg']};
+                    border: 1px solid {colors['input_border']};
                     border-radius: 8px;
                     padding: 8px;
-                    color: #495057;
-                    selection-background-color: #4285f4;
-                    selection-color: #ffffff;
+                    color: {colors['text_secondary']};
+                    selection-background-color: {colors['accent_blue']};
+                    selection-color: {colors['bg_primary']};
                 """)
                 history_layout.addWidget(event_history_text)
                 
@@ -1851,22 +2177,22 @@ class BusylightApp(QMainWindow):
                 def create_click_handler(group_name, widget):
                     def mouse_press_event(event):
                         # Add pressed effect while preserving bold title
-                        widget.setStyleSheet("""
-                            QGroupBox { 
-                                border: 2px solid darkblue; 
+                        widget.setStyleSheet(f"""
+                            QGroupBox {{ 
+                                border: 2px solid {colors['accent_blue']}; 
                                 border-radius: 12px; 
                                 margin: 7px; 
                                 padding: 16px; 
-                                background-color: #e6f3ff; 
-                            } 
-                            QGroupBox::title { 
+                                background-color: {colors['hover_bg']}; 
+                            }} 
+                            QGroupBox::title {{ 
                                 subcontrol-origin: margin; 
                                 left: 16px; 
                                 padding: 0 8px 0 8px; 
-                                color: #202124; 
+                                color: {colors['text_primary']}; 
                                 font-weight: 800; 
                                 font-size: 16px; 
-                            }
+                            }}
                         """)
                         
                         # Ensure the font remains bold
@@ -1899,10 +2225,38 @@ class BusylightApp(QMainWindow):
         else:
             # Fallback single status display if no groups
             status_group = QGroupBox("Status")
+            
+            # Set bold font directly using Qt's font system
+            bold_font = QFont()
+            bold_font.setBold(True)
+            bold_font.setPointSize(12)
+            status_group.setFont(bold_font)
+            
+            # Apply adaptive styling to the fallback status group
+            status_group.setStyleSheet(f"""
+                QGroupBox {{
+                    border: none;
+                    border-radius: 12px;
+                    margin: 8px;
+                    padding: 16px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                    border: 2px solid {colors['border_secondary']};
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 16px;
+                    padding: 0 8px 0 8px;
+                    color: {colors['text_primary']};
+                    font-weight: 800;
+                    font-size: 16px;
+                }}
+            """)
+            
             status_layout = QVBoxLayout()
             
             self.status_label = QLabel("Status: Off")
-            self.status_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+            self.status_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors['text_primary']};")
             self.status_label.setAlignment(Qt.AlignCenter)
             status_layout.addWidget(self.status_label)
             
@@ -2207,30 +2561,33 @@ class BusylightApp(QMainWindow):
         if not hasattr(self, 'device_label') or not self.device_label:
             return
             
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+            
         if connected:
             self.device_label.setText(f"Busylight: {device_name}")
-            self.device_label.setStyleSheet("color: #28a745; font-weight: 500; font-size: 13px;")
+            self.device_label.setStyleSheet(f"color: {colors['accent_green']}; font-weight: 500; font-size: 13px;")
             # Update connection dot
             if hasattr(self, 'connection_dot'):
-                self.connection_dot.setStyleSheet("font-size: 18px; color: #28a745; font-weight: bold;")
+                self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_green']}; font-weight: bold;")
                 self.connection_dot.setToolTip(f"Busylight: Connected ({device_name})")
             self.add_log(f"[{get_timestamp()}] Connected to Busylight: {device_name}")
         else:
             # Show red for any disconnected state (including simulation mode)
             if self.light_controller.simulation_mode:
                 self.device_label.setText("Busylight: No device found")
-                self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
+                self.device_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
                 # Update connection dot
                 if hasattr(self, 'connection_dot'):
-                    self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
+                    self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
                     self.connection_dot.setToolTip("Busylight: No device found")
                 self.add_log(f"[{get_timestamp()}] No Busylight device found")
             else:
                 self.device_label.setText("Busylight: No device found")
-                self.device_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
+                self.device_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
                 # Update connection dot
                 if hasattr(self, 'connection_dot'):
-                    self.connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
+                    self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
                     self.connection_dot.setToolTip("Busylight: No device found")
                 self.add_log(f"[{get_timestamp()}] No Busylight device found")
 
@@ -2334,20 +2691,23 @@ class BusylightApp(QMainWindow):
     def update_redis_connection_status(self, status):
         """Update the Redis connection status in the UI and log"""
         if hasattr(self, 'redis_connection_label'):
+            # Get adaptive colors for styling
+            colors = get_adaptive_colors()
+            
             if status == "connected":
                 self.redis_connection_label.setText("Connected")
-                self.redis_connection_label.setStyleSheet("color: #28a745; font-weight: 500; font-size: 13px;")
+                self.redis_connection_label.setStyleSheet(f"color: {colors['accent_green']}; font-weight: 500; font-size: 13px;")
                 # Update Redis connection dot
                 if hasattr(self, 'redis_connection_dot'):
-                    self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #28a745; font-weight: bold;")
+                    self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_green']}; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Connected")
                 self.add_log(f"[{get_timestamp()}] Redis connected")
             else:
                 self.redis_connection_label.setText("Disconnected")
-                self.redis_connection_label.setStyleSheet("color: #dc3545; font-weight: 500; font-size: 13px;")
+                self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
                 # Update Redis connection dot
                 if hasattr(self, 'redis_connection_dot'):
-                    self.redis_connection_dot.setStyleSheet("font-size: 18px; color: #dc3545; font-weight: bold;")
+                    self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Disconnected")
                 self.add_log(f"[{get_timestamp()}] Redis disconnected")
 
@@ -2508,6 +2868,9 @@ class BusylightApp(QMainWindow):
             status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
             status_label.setText(status_name)
             
+            # Get adaptive colors for styling
+            colors = get_adaptive_colors()
+            
             # Set modern background color based on status
             if status in self.light_controller.COLOR_MAP:
                 r, g, b = self.light_controller.COLOR_MAP[status]
@@ -2522,12 +2885,16 @@ class BusylightApp(QMainWindow):
                         max-width: 90px;
                         max-height: 90px;
                         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 #f8f9fa, stop:1 #e9ecef);
-                        border: 2px solid #dee2e6;
-                        color: #6c757d;
+                            stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
+                        border: 2px solid {colors['border_secondary']};
+                        color: {colors['text_muted']};
                     """)
                 else:
                     # Create a subtle gradient for active statuses
+                    # Determine text color based on brightness of status color
+                    brightness = (r + g + b) / 3
+                    text_color = "#000000" if brightness > 128 else "#ffffff"
+                    
                     status_label.setStyleSheet(f"""
                         font-size: 11px;
                         font-weight: 700;
@@ -2541,11 +2908,11 @@ class BusylightApp(QMainWindow):
                             stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}), 
                             stop:1 rgb({r}, {g}, {b}));
                         border: 2px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
-                        color: #000000;
+                        color: {text_color};
                     """)
             else:
                 # Default styling for unknown status
-                status_label.setStyleSheet("""
+                status_label.setStyleSheet(f"""
                     font-size: 11px;
                     font-weight: 700;
                     padding: 12px;
@@ -2555,9 +2922,9 @@ class BusylightApp(QMainWindow):
                     max-width: 90px;
                     max-height: 90px;
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 #f8f9fa, stop:1 #e9ecef);
-                    border: 2px solid #dee2e6;
-                    color: #6c757d;
+                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
+                    border: 2px solid {colors['border_secondary']};
+                    color: {colors['text_muted']};
                 """)
             
             # Update timestamp
@@ -2626,30 +2993,33 @@ class BusylightApp(QMainWindow):
     
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+        
         # Restore normal appearance with bold title
-        widget.setStyleSheet("""
-            QGroupBox {
+        widget.setStyleSheet(f"""
+            QGroupBox {{
                 border: none;
                 border-radius: 12px;
                 margin: 8px;
                 padding: 16px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f8f9fa);
-                border: 1px solid #e9ecef;
-            }
-            QGroupBox:hover {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ffffff, stop:1 #f1f3f4);
-                border: 1px solid #4285f4;
-            }
-            QGroupBox::title {
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['hover_bg']});
+                border: 2px solid {colors['accent_blue']};
+            }}
+            QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 16px;
                 padding: 0 8px 0 8px;
-                color: #202124;
+                color: {colors['text_primary']};
                 font-weight: 800;
                 font-size: 16px;
-            }
+            }}
         """)
         
         # Ensure the font remains bold
@@ -2690,8 +3060,9 @@ def main():
     create_default_icon()
     
     # Set application icon
-    if os.path.exists("icon.png"):
-        app_icon = QIcon("icon.png")
+    icon_path = get_resource_path("icon.png")
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
     else:
         # Fallback icon (in case saving failed)
         pixmap = QPixmap(64, 64)
@@ -2742,14 +3113,18 @@ def cleanup_application(window):
 
 def create_default_icon():
     """Create a default icon file if it doesn't exist"""
-    if not os.path.exists("icon.png"):
+    icon_path = get_resource_path("icon.png")
+    if not os.path.exists(icon_path):
         # Create a simple colored icon
         pixmap = QPixmap(128, 128)
         pixmap.fill(QColor(0, 255, 0))  # Green
         
-        # Save it
-        pixmap.save("icon.png")
-        print(f"[{get_timestamp()}] Created default icon.png")
+        # Save it - try to save in the current directory for development
+        try:
+            pixmap.save("icon.png")
+            print(f"[{get_timestamp()}] Created default icon.png")
+        except Exception as e:
+            print(f"[{get_timestamp()}] Could not create default icon: {e}")
 
 if __name__ == '__main__':
     try:
