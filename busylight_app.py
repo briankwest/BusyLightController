@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
                             QFileDialog, QMessageBox, QScrollArea, QSizePolicy)
-from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings
-from PySide6.QtGui import QIcon, QColor, QPixmap, QFont
+from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint
+from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
 import subprocess
 import webbrowser
 
@@ -1334,6 +1334,931 @@ class StatusChangeDialog(QDialog):
         """Return the result data"""
         return self.result_data
 
+# Analytics Dashboard class
+class AnalyticsDashboard(QDialog):
+    def __init__(self, redis_info, username, password, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ticket Analytics Dashboard")
+        self.setModal(False)
+        self.resize(1200, 800)
+        
+        # Store credentials and Redis info
+        self.redis_info = redis_info
+        self.username = username
+        self.password = password
+        
+        # Initialize Redis connection
+        self.redis_client = None
+        self.pubsub = None
+        
+        # Data storage
+        self.current_stats = None
+        self.ticket_timeline = []  # Store historical ticket counts for timeline
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Connect to Redis and start listening
+        self.connect_redis()
+        
+        # Timer for periodic updates
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.refresh_data)
+        self.update_timer.start(30000)  # Update every 30 seconds
+        
+        # Initial data load
+        self.refresh_data()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Get adaptive colors
+        colors = get_adaptive_colors()
+        
+        # Set dialog styling
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QGroupBox {{
+                border: 2px solid {colors['border_secondary']};
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                font-weight: 600;
+                font-size: 14px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: {colors['text_primary']};
+                font-weight: 800;
+                font-size: 16px;
+            }}
+        """)
+        
+        # Header
+        header_label = QLabel("Ticket Analytics Dashboard")
+        header_label.setAlignment(Qt.AlignCenter)
+        header_label.setStyleSheet(f"""
+            font-size: 24px;
+            font-weight: bold;
+            color: {colors['text_primary']};
+            margin-bottom: 20px;
+        """)
+        layout.addWidget(header_label)
+        
+        # Last updated label
+        self.last_updated_label = QLabel("Last Updated: Never")
+        self.last_updated_label.setAlignment(Qt.AlignCenter)
+        self.last_updated_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; margin-bottom: 10px;")
+        layout.addWidget(self.last_updated_label)
+        
+        # Create scroll area for content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: {colors['bg_secondary']};
+                width: 12px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['text_muted']};
+                border-radius: 6px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+        
+        # Main content widget
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setSpacing(20)
+        
+        # Top metrics row - Total tickets
+        total_layout = QHBoxLayout()
+        
+        # Total tickets metric
+        self.total_tickets_group = QGroupBox("Total Open Tickets")
+        total_group_layout = QVBoxLayout(self.total_tickets_group)
+        self.total_tickets_label = QLabel("0")
+        self.total_tickets_label.setAlignment(Qt.AlignCenter)
+        self.total_tickets_label.setStyleSheet(f"""
+            font-size: 48px;
+            font-weight: bold;
+            color: {colors['accent_blue']};
+            background: transparent;
+        """)
+        total_group_layout.addWidget(self.total_tickets_label)
+        total_layout.addWidget(self.total_tickets_group)
+        
+        # Categories with tickets metric
+        self.categories_count_group = QGroupBox("Active Categories")
+        categories_count_layout = QVBoxLayout(self.categories_count_group)
+        self.categories_count_label = QLabel("0")
+        self.categories_count_label.setAlignment(Qt.AlignCenter)
+        self.categories_count_label.setStyleSheet(f"""
+            font-size: 36px;
+            font-weight: bold;
+            color: {colors['accent_green']};
+            background: transparent;
+        """)
+        categories_count_layout.addWidget(self.categories_count_label)
+        total_layout.addWidget(self.categories_count_group)
+        
+        # Languages metric
+        self.languages_count_group = QGroupBox("Languages")
+        languages_count_layout = QVBoxLayout(self.languages_count_group)
+        self.languages_count_label = QLabel("0")
+        self.languages_count_label.setAlignment(Qt.AlignCenter)
+        self.languages_count_label.setStyleSheet(f"""
+            font-size: 36px;
+            font-weight: bold;
+            color: {colors['accent_orange']};
+            background: transparent;
+        """)
+        languages_count_layout.addWidget(self.languages_count_label)
+        total_layout.addWidget(self.languages_count_group)
+        
+        content_layout.addLayout(total_layout)
+        
+        # Charts row - Priority and Category pie charts
+        charts_layout = QHBoxLayout()
+        
+        # Priority pie chart
+        self.priority_group = QGroupBox("Priority Breakdown")
+        priority_layout = QVBoxLayout(self.priority_group)
+        self.priority_chart = PieChartWidget()
+        self.priority_chart.setMinimumSize(300, 250)
+        priority_layout.addWidget(self.priority_chart)
+        charts_layout.addWidget(self.priority_group)
+        
+        # Category bar chart
+        self.category_group = QGroupBox("Category Breakdown")
+        category_layout = QVBoxLayout(self.category_group)
+        self.category_chart = BarChartWidget()
+        self.category_chart.setMinimumSize(300, 250)
+        category_layout.addWidget(self.category_chart)
+        charts_layout.addWidget(self.category_group)
+        
+        content_layout.addLayout(charts_layout)
+        
+        # Timeline chart for ticket counts over time
+        self.timeline_group = QGroupBox("Ticket Count Timeline")
+        timeline_layout = QVBoxLayout(self.timeline_group)
+        self.timeline_chart = TimelineChartWidget()
+        self.timeline_chart.setMinimumHeight(200)
+        timeline_layout.addWidget(self.timeline_chart)
+        content_layout.addWidget(self.timeline_group)
+        
+        # Recent tickets table
+        self.recent_tickets_group = QGroupBox("Recent Tickets")
+        recent_layout = QVBoxLayout(self.recent_tickets_group)
+        self.recent_tickets_text = QTextEdit()
+        self.recent_tickets_text.setReadOnly(True)
+        self.recent_tickets_text.setMinimumHeight(300)
+        self.recent_tickets_text.setStyleSheet(f"""
+            background: {colors['input_bg']};
+            border: 1px solid {colors['input_border']};
+            border-radius: 8px;
+            padding: 12px;
+            color: {colors['text_secondary']};
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 11px;
+            line-height: 1.4;
+        """)
+        recent_layout.addWidget(self.recent_tickets_text)
+        content_layout.addWidget(self.recent_tickets_group)
+        
+        # Control buttons
+        button_layout = QHBoxLayout()
+        
+        self.refresh_button = QPushButton("Refresh Data")
+        self.refresh_button.clicked.connect(self.refresh_data)
+        self.refresh_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.close)
+        self.close_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['text_muted']};
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        
+        button_layout.addWidget(self.refresh_button)
+        button_layout.addStretch()
+        button_layout.addWidget(self.close_button)
+        content_layout.addLayout(button_layout)
+        
+        scroll_area.setWidget(content_widget)
+        layout.addWidget(scroll_area)
+        
+    def connect_redis(self):
+        """Connect to Redis using the provided credentials"""
+        try:
+            if self.redis_info:
+                self.redis_client = redis.StrictRedis(
+                    host=self.redis_info['host'],
+                    port=self.redis_info['port'],
+                    password=self.redis_info['password'],
+                    db=0,
+                    decode_responses=True,
+                    socket_timeout=10,
+                    socket_connect_timeout=10
+                )
+                self.redis_client.ping()
+                print(f"[{get_timestamp()}] Analytics dashboard connected to Redis")
+                
+                # Subscribe to ticket stats updates
+                self.pubsub = self.redis_client.pubsub()
+                self.pubsub.subscribe("ticket_stats_channel")
+                
+                # Start listening thread
+                self.listen_thread = QThread()
+                self.listener = TicketStatsListener(self.pubsub)
+                self.listener.moveToThread(self.listen_thread)
+                self.listener.stats_updated.connect(self.handle_stats_update)
+                self.listen_thread.started.connect(self.listener.run)
+                self.listen_thread.start()
+                
+        except Exception as e:
+            print(f"[{get_timestamp()}] Analytics dashboard Redis connection error: {e}")
+    
+    def refresh_data(self):
+        """Refresh data from Redis"""
+        try:
+            if not self.redis_client:
+                return
+                
+            # Load historical data from ticket_stats queue if timeline is empty
+            if not self.ticket_timeline:
+                self.load_historical_timeline_data()
+                
+            # Get latest ticket stats
+            latest_stats = self.redis_client.get("latest_ticket_stats")
+            if latest_stats:
+                stats_data = json.loads(latest_stats)
+                self.update_dashboard(stats_data)
+            else:
+                # Try to get from the list
+                stats_list = self.redis_client.lrange("ticket_stats", 0, 0)
+                if stats_list:
+                    stats_data = json.loads(stats_list[0])
+                    self.update_dashboard(stats_data)
+                    
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error refreshing analytics data: {e}")
+    
+    def load_historical_timeline_data(self):
+        """Load the previous 20 events from ticket_stats to populate timeline"""
+        try:
+            # Get the last 20 events from the ticket_stats list (most recent first)
+            historical_stats = self.redis_client.lrange("ticket_stats", 0, 19)
+            
+            if historical_stats:
+                print(f"[{get_timestamp()}] Loading {len(historical_stats)} historical ticket stats for timeline")
+                
+                # Process events in reverse order (oldest first) to build timeline correctly
+                for stats_json in reversed(historical_stats):
+                    try:
+                        stats_data = json.loads(stats_json)
+                        data = stats_data.get('data', {})
+                        total_tickets = data.get('total_tickets', 0)
+                        
+                        # Parse the timestamp from the event
+                        created_at_str = stats_data.get('created_at', '')
+                        if created_at_str:
+                            # Parse ISO format timestamp
+                            import datetime
+                            try:
+                                timestamp = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                                # Convert to local time if needed
+                                timestamp = timestamp.replace(tzinfo=None)
+                            except:
+                                # Fallback to current time if parsing fails
+                                timestamp = datetime.datetime.now()
+                        else:
+                            timestamp = datetime.datetime.now()
+                        
+                        # Add to timeline
+                        self.ticket_timeline.append({
+                            'timestamp': timestamp,
+                            'count': total_tickets
+                        })
+                        
+                    except json.JSONDecodeError as e:
+                        print(f"[{get_timestamp()}] Error parsing historical stats: {e}")
+                        continue
+                
+                # Keep only last 100 data points for performance
+                if len(self.ticket_timeline) > 100:
+                    self.ticket_timeline = self.ticket_timeline[-100:]
+                
+                print(f"[{get_timestamp()}] Loaded {len(self.ticket_timeline)} historical data points for timeline")
+                
+                # Update the timeline chart with historical data
+                self.timeline_chart.set_data(self.ticket_timeline)
+                
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error loading historical timeline data: {e}")
+    
+    def handle_stats_update(self, stats_data):
+        """Handle real-time stats updates"""
+        try:
+            self.update_dashboard(stats_data)
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error handling stats update: {e}")
+    
+    def update_dashboard(self, stats_data):
+        """Update the dashboard with new stats data"""
+        try:
+            self.current_stats = stats_data
+            data = stats_data.get('data', {})
+            
+            # Update last updated time
+            created_at = stats_data.get('created_at', 'Unknown')
+            self.last_updated_label.setText(f"Last Updated: {created_at}")
+            
+            # Update total tickets
+            total_tickets = data.get('total_tickets', 0)
+            self.total_tickets_label.setText(str(total_tickets))
+            
+            # Update categories count (number of categories with tickets)
+            categories = data.get('categories', {})
+            active_categories = len([cat for cat, count in categories.items() if count > 0])
+            self.categories_count_label.setText(str(active_categories))
+            
+            # Update languages count
+            languages = data.get('languages', {})
+            language_count = len([lang for lang, count in languages.items() if count > 0])
+            self.languages_count_label.setText(str(language_count))
+            
+            # Add to timeline data
+            import datetime
+            timestamp = datetime.datetime.now()
+            
+            # Only add new timeline data if this represents a real change
+            # Check if this is significantly different from the last data point
+            should_add_point = True
+            if self.ticket_timeline:
+                last_point = self.ticket_timeline[-1]
+                time_diff = (timestamp - last_point['timestamp']).total_seconds()
+                count_diff = abs(total_tickets - last_point['count'])
+                
+                # Only add if enough time has passed (30+ seconds) OR ticket count changed
+                if time_diff < 30 and count_diff == 0:
+                    should_add_point = False
+            
+            if should_add_point:
+                self.ticket_timeline.append({
+                    'timestamp': timestamp,
+                    'count': total_tickets
+                })
+                
+                # Keep only last 100 data points for performance
+                if len(self.ticket_timeline) > 100:
+                    self.ticket_timeline = self.ticket_timeline[-100:]
+                
+                # Update timeline chart
+                self.timeline_chart.set_data(self.ticket_timeline)
+            
+            # Update priority pie chart
+            priorities = data.get('priorities', {})
+            self.priority_chart.set_data(priorities, "Priority Distribution")
+            
+            # Update category bar chart
+            self.category_chart.set_data(categories, "Category Distribution")
+            
+            # Update recent tickets
+            self.update_recent_tickets(data.get('tickets', []))
+            
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error updating dashboard: {e}")
+    
+    def update_recent_tickets(self, tickets):
+        """Update the recent tickets display"""
+        try:
+            recent_text = ""
+            for i, ticket in enumerate(tickets[:10]):  # Show only first 10
+                ticket_num = ticket.get('ticket_number', 'Unknown')
+                classification = ticket.get('classification', {})
+                category = classification.get('category', 'Unknown')
+                priority = classification.get('priority', 'Unknown')
+                summary = classification.get('summary', 'No summary available')
+                
+                # Truncate summary if too long
+                if len(summary) > 80:
+                    summary = summary[:77] + "..."
+                
+                recent_text += f"#{ticket_num} [{category}] [{priority}]\n"
+                recent_text += f"  {summary}\n\n"
+                
+            self.recent_tickets_text.setPlainText(recent_text.strip())
+            
+        except Exception as e:
+            print(f"[{get_timestamp()}] Error updating recent tickets: {e}")
+    
+    def closeEvent(self, event):
+        """Clean up when closing"""
+        try:
+            if hasattr(self, 'listen_thread') and self.listen_thread:
+                if hasattr(self, 'listener'):
+                    self.listener.stop()
+                self.listen_thread.quit()
+                self.listen_thread.wait(1000)
+            if self.pubsub:
+                self.pubsub.close()
+        except:
+            pass
+        event.accept()
+
+# Custom Pie Chart Widget
+class PieChartWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data = {}
+        self.title = "Chart"
+        self.colors = [
+            '#4285f4',  # Google Blue
+            '#34a853',  # Google Green  
+            '#fbbc05',  # Google Yellow
+            '#ea4335',  # Google Red
+            '#9c27b0',  # Material Purple
+            '#ff9800',  # Material Orange
+            '#00bcd4',  # Material Cyan
+            '#795548',  # Material Brown
+            '#e91e63',  # Material Pink
+            '#009688',  # Material Teal
+            '#607d8b',  # Material Blue Grey
+            '#3f51b5',  # Material Indigo
+        ]
+        
+    def set_data(self, data, title="Chart"):
+        """Set the data for the pie chart"""
+        self.data = data
+        self.title = title
+        self.update()  # Trigger a repaint
+    
+    def paintEvent(self, event):
+        """Custom paint event to draw the pie chart"""
+        if not self.data:
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Get adaptive colors
+        colors = get_adaptive_colors()
+        
+        # Calculate total for percentages
+        total = sum(self.data.values())
+        if total == 0:
+            return
+        
+        # Chart area - improved sizing
+        margin = 30
+        legend_width = 180
+        chart_size = min(self.width() - margin * 2 - legend_width, self.height() - margin * 2 - 40)
+        chart_rect = QRect(margin, margin + 40, chart_size, chart_size)
+        
+        # Draw title with better styling
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, self.title)
+        
+        # Draw shadow for depth
+        shadow_offset = 3
+        shadow_rect = chart_rect.adjusted(shadow_offset, shadow_offset, shadow_offset, shadow_offset)
+        painter.setBrush(QColor(0, 0, 0, 30))  # Semi-transparent black
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(shadow_rect)
+        
+        # Draw pie slices with improved styling
+        start_angle = 0
+        legend_y = chart_rect.top()
+        
+        sorted_data = sorted(self.data.items(), key=lambda x: x[1], reverse=True)
+        
+        for i, (label, value) in enumerate(sorted_data):
+            # Calculate slice angle
+            span_angle = int((value / total) * 360 * 16)  # 16ths of degrees for Qt
+            
+            # Set color with gradient effect
+            base_color = QColor(self.colors[i % len(self.colors)])
+            painter.setBrush(base_color)
+            painter.setPen(QColor(colors['bg_primary']))  # Thin white border
+            
+            # Draw slice
+            painter.drawPie(chart_rect, start_angle, span_angle)
+            
+            # Draw legend with better spacing and alignment
+            legend_x = chart_rect.right() + 20
+            legend_color_rect = QRect(legend_x, legend_y + 2, 16, 16)
+            
+            # Legend color box with border
+            painter.setBrush(base_color)
+            painter.setPen(QColor(colors['border_secondary']))
+            painter.drawRect(legend_color_rect)
+            
+            # Legend text with better formatting
+            painter.setPen(QColor(colors['text_primary']))
+            text_font = QFont()
+            text_font.setPointSize(10)
+            painter.setFont(text_font)
+            
+            percentage = (value / total) * 100
+            # Truncate long labels
+            display_label = label if len(label) <= 12 else label[:9] + "..."
+            legend_text = f"{display_label}: {value} ({percentage:.1f}%)"
+            text_rect = QRect(legend_x + 22, legend_y, legend_width - 22, 20)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, legend_text)
+            
+            start_angle += span_angle
+            legend_y += 25  # Better spacing between legend items
+
+# Custom Bar Chart Widget
+class BarChartWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data = {}
+        self.title = "Chart"
+        self.colors = [
+            '#4285f4',  # Google Blue
+            '#34a853',  # Google Green  
+            '#fbbc05',  # Google Yellow
+            '#ea4335',  # Google Red
+            '#9c27b0',  # Material Purple
+            '#ff9800',  # Material Orange
+            '#00bcd4',  # Material Cyan
+            '#795548',  # Material Brown
+            '#e91e63',  # Material Pink
+            '#009688',  # Material Teal
+            '#607d8b',  # Material Blue Grey
+            '#3f51b5',  # Material Indigo
+        ]
+        
+    def set_data(self, data, title="Chart"):
+        """Set the data for the bar chart"""
+        self.data = data
+        self.title = title
+        self.update()  # Trigger a repaint
+    
+    def paintEvent(self, event):
+        """Custom paint event to draw the bar chart"""
+        if not self.data:
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Get adaptive colors
+        colors = get_adaptive_colors()
+        
+        # Calculate total for percentages
+        total = sum(self.data.values())
+        if total == 0:
+            return
+        
+        # Chart area
+        margin = 30
+        chart_rect = self.rect().adjusted(margin, margin + 40, -margin, -margin - 30)
+        
+        # Draw title
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, self.title)
+        
+        # Sort data by value (descending)
+        sorted_data = sorted(self.data.items(), key=lambda x: x[1], reverse=True)
+        
+        if not sorted_data:
+            return
+            
+        # Calculate bar dimensions
+        num_bars = len(sorted_data)
+        bar_width = chart_rect.width() / num_bars * 0.8  # 80% width, 20% spacing
+        bar_spacing = chart_rect.width() / num_bars * 0.2
+        max_value = max(item[1] for item in sorted_data)
+        
+        if max_value == 0:
+            max_value = 1  # Avoid division by zero
+        
+        # Draw axes
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.bottomRight())  # X-axis
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())      # Y-axis
+        
+        # Draw grid lines for better readability
+        painter.setPen(QColor(colors['border_secondary']))
+        for i in range(1, 5):  # 4 horizontal grid lines
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            painter.drawLine(chart_rect.left(), int(y_pos), chart_rect.right(), int(y_pos))
+        
+        # Draw bars
+        for i, (label, value) in enumerate(sorted_data):
+            # Calculate bar position and height
+            bar_height = (value / max_value) * chart_rect.height()
+            bar_x = chart_rect.left() + i * (bar_width + bar_spacing) + bar_spacing / 2
+            bar_y = chart_rect.bottom() - bar_height
+            
+            # Create bar rectangle
+            bar_rect = QRect(int(bar_x), int(bar_y), int(bar_width), int(bar_height))
+            
+            # Set color
+            color = QColor(self.colors[i % len(self.colors)])
+            painter.setBrush(color)
+            painter.setPen(QColor(colors['bg_primary']))
+            
+            # Draw bar with shadow effect
+            shadow_rect = bar_rect.adjusted(2, 2, 2, 2)
+            painter.setBrush(QColor(0, 0, 0, 30))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(shadow_rect)
+            
+            # Draw main bar
+            painter.setBrush(color)
+            painter.setPen(QColor(colors['bg_primary']))
+            painter.drawRect(bar_rect)
+            
+            # Draw value on top of bar
+            painter.setPen(QColor(colors['text_primary']))
+            value_font = QFont()
+            value_font.setPointSize(9)
+            value_font.setBold(True)
+            painter.setFont(value_font)
+            
+            value_rect = QRect(int(bar_x), int(bar_y) - 20, int(bar_width), 15)
+            painter.drawText(value_rect, Qt.AlignCenter, str(value))
+            
+            # Draw label below bar (rotated for better fit)
+            painter.save()
+            label_font = QFont()
+            label_font.setPointSize(8)
+            painter.setFont(label_font)
+            
+            # Truncate long labels
+            display_label = label if len(label) <= 8 else label[:5] + "..."
+            
+            # Position for rotated text
+            label_x = bar_x + bar_width / 2
+            label_y = chart_rect.bottom() + 15
+            
+            painter.translate(label_x, label_y)
+            painter.rotate(-45)  # Rotate text 45 degrees
+            painter.drawText(-30, 0, 60, 15, Qt.AlignCenter, display_label)
+            painter.restore()
+        
+        # Draw Y-axis labels
+        painter.setPen(QColor(colors['text_secondary']))
+        label_font = QFont()
+        label_font.setPointSize(9)
+        painter.setFont(label_font)
+        
+        for i in range(5):  # 5 Y-axis labels
+            y_val = (max_value / 4) * i
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            
+            label_rect = QRect(5, int(y_pos) - 10, margin - 10, 20)
+            painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(y_val)}")
+
+# Custom Timeline Chart Widget  
+class TimelineChartWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline_data = []
+        self.hover_point = None  # Track which point is being hovered
+        self.data_points = []    # Store rendered point positions for hit testing
+        self.setMouseTracking(True)  # Enable mouse tracking for tooltips
+        
+    def set_data(self, timeline_data):
+        """Set the timeline data"""
+        self.timeline_data = timeline_data
+        self.update()  # Trigger repaint
+        
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement for tooltips"""
+        mouse_pos = event.pos()
+        self.hover_point = None
+        
+        # Check if mouse is over any data point
+        for i, (point, data) in enumerate(self.data_points):
+            distance = ((mouse_pos.x() - point.x()) ** 2 + (mouse_pos.y() - point.y()) ** 2) ** 0.5
+            if distance <= 8:  # Within 8 pixels of the point
+                self.hover_point = i
+                self.setToolTip(f"Time: {data['timestamp'].strftime('%H:%M:%S')}\nTickets: {data['count']}")
+                break
+        
+        if self.hover_point is None:
+            self.setToolTip("")  # Clear tooltip
+            
+        self.update()  # Redraw to highlight hovered point
+        
+    def paintEvent(self, event):
+        """Custom paint event to draw the timeline chart"""
+        if not self.timeline_data or len(self.timeline_data) < 1:
+            return
+            
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Get adaptive colors
+        colors = get_adaptive_colors()
+        
+        # Chart area with better margins
+        margin = 50
+        chart_rect = self.rect().adjusted(margin, margin + 30, -margin, -margin - 20)
+        
+        # Draw title with improved styling
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, "Ticket Count Over Time")
+        
+        # Handle single data point case
+        if len(self.timeline_data) == 1:
+            # Draw single point in center
+            center_x = chart_rect.center().x()
+            center_y = chart_rect.center().y()
+            point = QPoint(center_x, center_y)
+            
+            painter.setBrush(QColor(colors['accent_blue']))
+            painter.setPen(QColor(colors['accent_blue']))
+            painter.drawEllipse(point, 6, 6)
+            
+            # Store for tooltip
+            self.data_points = [(point, self.timeline_data[0])]
+            
+            # Draw count label
+            painter.setPen(QColor(colors['text_primary']))
+            label_font = QFont()
+            label_font.setPointSize(12)
+            painter.setFont(label_font)
+            painter.drawText(center_x - 20, center_y - 20, 40, 15, Qt.AlignCenter, str(self.timeline_data[0]['count']))
+            return
+        
+        # Find min/max values for scaling
+        counts = [point['count'] for point in self.timeline_data]
+        min_count = min(counts)
+        max_count = max(counts)
+        
+        if max_count == min_count:
+            max_count = min_count + 1  # Avoid division by zero
+        
+        # Draw grid lines for better readability
+        painter.setPen(QColor(colors['border_secondary']))
+        for i in range(5):  # 5 horizontal grid lines
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            painter.drawLine(chart_rect.left(), int(y_pos), chart_rect.right(), int(y_pos))
+        
+        # Draw axes with improved styling
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.bottomRight())  # X-axis
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())      # Y-axis
+        
+        # Calculate and store data points
+        points = []
+        self.data_points = []
+        
+        for i, data_point in enumerate(self.timeline_data):
+            count = data_point['count']
+            
+            # Calculate position
+            x = chart_rect.left() + (i / (len(self.timeline_data) - 1)) * chart_rect.width()
+            y = chart_rect.bottom() - ((count - min_count) / (max_count - min_count)) * chart_rect.height()
+            
+            point = QPoint(int(x), int(y))
+            points.append(point)
+            self.data_points.append((point, data_point))
+        
+        # Draw line connecting points with gradient effect
+        painter.setPen(QColor(colors['accent_blue']))
+        painter.setPen(QPen(QColor(colors['accent_blue']), 2))  # Thicker line
+        for i in range(len(points) - 1):
+            painter.drawLine(points[i], points[i + 1])
+        
+        # Draw data points with improved styling
+        for i, (point, data) in enumerate(self.data_points):
+            if i == self.hover_point:
+                # Highlight hovered point
+                painter.setBrush(QColor(colors['accent_orange']))
+                painter.setPen(QColor(colors['accent_orange']))
+                painter.drawEllipse(point, 8, 8)  # Larger when hovered
+                
+                # Draw count label for hovered point
+                painter.setPen(QColor(colors['text_primary']))
+                label_font = QFont()
+                label_font.setPointSize(10)
+                label_font.setBold(True)
+                painter.setFont(label_font)
+                label_rect = QRect(point.x() - 15, point.y() - 25, 30, 15)
+                painter.drawText(label_rect, Qt.AlignCenter, str(data['count']))
+            else:
+                # Normal point
+                painter.setBrush(QColor(colors['accent_blue']))
+                painter.setPen(QColor(colors['bg_primary']))
+                painter.drawEllipse(point, 5, 5)
+        
+        # Draw Y-axis labels with better formatting
+        painter.setPen(QColor(colors['text_secondary']))
+        label_font = QFont()
+        label_font.setPointSize(9)
+        painter.setFont(label_font)
+        
+        # Y-axis labels (ticket counts)
+        for i in range(5):  # 5 labels
+            y_val = min_count + (max_count - min_count) * (i / 4)
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            
+            label_rect = QRect(5, int(y_pos) - 10, margin - 10, 20)
+            painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(y_val)}")
+        
+        # Draw X-axis time labels with better spacing
+        if len(self.timeline_data) > 1:
+            # Show multiple time points if we have enough data
+            num_labels = min(5, len(self.timeline_data))
+            for i in range(num_labels):
+                data_index = int(i * (len(self.timeline_data) - 1) / (num_labels - 1))
+                time_str = self.timeline_data[data_index]['timestamp'].strftime("%H:%M")
+                x_pos = chart_rect.left() + (data_index / (len(self.timeline_data) - 1)) * chart_rect.width()
+                
+                time_rect = QRect(int(x_pos) - 20, chart_rect.bottom() + 5, 40, 20)
+                painter.drawText(time_rect, Qt.AlignCenter, time_str)
+
+# Ticket stats listener for real-time updates
+class TicketStatsListener(QObject):
+    stats_updated = pyqtSignal(dict)
+    
+    def __init__(self, pubsub):
+        super().__init__()
+        self.pubsub = pubsub
+        self.is_running = True
+    
+    def run(self):
+        """Listen for ticket stats updates"""
+        while self.is_running:
+            try:
+                message = self.pubsub.get_message(timeout=0.1)
+                if message and message["type"] == "message":
+                    stats_data = json.loads(message["data"])
+                    self.stats_updated.emit(stats_data)
+            except Exception as e:
+                print(f"[{get_timestamp()}] Error in ticket stats listener: {e}")
+            
+            # Small sleep to prevent CPU hogging
+            QThread.msleep(100)
+    
+    def stop(self):
+        """Stop the listener"""
+        self.is_running = False
+
 # Worker class to handle redis operations in background
 class RedisWorker(QObject):
     status_updated = pyqtSignal(str)
@@ -1395,51 +2320,40 @@ class RedisWorker(QObject):
         if not self.connect_to_redis():
             return
             
-        # Get the most recent status from event_queue for each group
+        # Get the most recent status from group-specific status keys
         try:
             latest_status = None
             group_found_status = {}
             
-            # Get all events from event_queue and find the most recent for each group
-            try:
-                # Get all items from the event_queue (most recent is at index -1)
-                queue_length = self.redis_client.llen("event_queue")
-                if queue_length > 0:
-                    self.log_message.emit(f"[{get_timestamp()}] Found {queue_length} events in event_queue")
-                    
-                    # Check events from most recent to oldest
-                    for i in range(queue_length):
-                        event_data = self.redis_client.lindex("event_queue", -(i+1))  # Start from most recent
-                        if event_data:
-                            try:
-                                data = json.loads(event_data)
-                                event_group = data.get('group')
-                                event_status = data.get('status')
+            # Get the most recent status for each group from their individual status keys
+            for group in self.groups:
+                status_key = f"status:{group}"
+                try:
+                    # Get the most recent status event for this group
+                    recent_event = self.redis_client.lindex(status_key, 0)  # Most recent is at index 0
+                    if recent_event:
+                        try:
+                            data = json.loads(recent_event)
+                            event_status = data.get('status')
+                            
+                            if event_status:
+                                group_found_status[group] = {
+                                    'status': event_status,
+                                    'data': data
+                                }
+                                self.log_message.emit(f"[{get_timestamp()}] Found recent status for group '{group}': {event_status}")
                                 
-                                # If this group hasn't been found yet and this event belongs to one of our groups
-                                if event_group in self.groups and event_group not in group_found_status:
-                                    group_found_status[event_group] = {
-                                        'status': event_status,
-                                        'data': data
-                                    }
-                                    self.log_message.emit(f"[{get_timestamp()}] Found recent event for group '{event_group}': {event_status}")
+                                # Use first status found as overall status
+                                if latest_status is None:
+                                    latest_status = event_status
                                     
-                                    # Use first status found as overall status
-                                    if latest_status is None:
-                                        latest_status = event_status
-                                        
-                                # Stop if we've found status for all our groups
-                                if len(group_found_status) == len(self.groups):
-                                    break
-                                    
-                            except json.JSONDecodeError as e:
-                                self.log_message.emit(f"[{get_timestamp()}] Error parsing event data: {e}")
-                                continue
-                else:
-                    self.log_message.emit(f"[{get_timestamp()}] No events found in event_queue")
-                    
-            except Exception as e:
-                self.log_message.emit(f"[{get_timestamp()}] Error accessing event_queue: {e}")
+                        except json.JSONDecodeError as e:
+                            self.log_message.emit(f"[{get_timestamp()}] Error parsing status data for group '{group}': {e}")
+                    else:
+                        self.log_message.emit(f"[{get_timestamp()}] No status events found for group '{group}'")
+                        
+                except Exception as e:
+                    self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
             
             # Emit status for each group (found status or default to normal)
             for group in self.groups:
@@ -1451,7 +2365,7 @@ class RedisWorker(QObject):
                     self.process_ticket_info(data)
                 else:
                     # No recent event found, default to normal
-                    self.log_message.emit(f"[{get_timestamp()}] No recent event found for group '{group}', defaulting to normal")
+                    self.log_message.emit(f"[{get_timestamp()}] No recent status found for group '{group}', defaulting to normal")
                     default_data = {'group': group, 'status': 'normal'}
                     self.group_status_updated.emit(group, 'normal', default_data)
             
@@ -1462,16 +2376,16 @@ class RedisWorker(QObject):
                 self.status_updated.emit('normal')
                 
         except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error getting last message: {e}")
+            self.log_message.emit(f"[{get_timestamp()}] Error getting initial status: {e}")
         
-        # Subscribe to all group channels
+        # Subscribe to all group status channels
         pubsub = self.redis_client.pubsub()
         for group in self.groups:
-            channel_name = f"{group}_channel"
+            channel_name = f"status:{group}"
             pubsub.subscribe(channel_name)
             self.log_message.emit(f"[{get_timestamp()}] Subscribed to {channel_name}")
         
-        self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} channels...")
+        self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} status channels...")
         
         # Listen for messages in a loop
         while self.is_running:
@@ -1480,8 +2394,8 @@ class RedisWorker(QObject):
                 try:
                     data = json.loads(message["data"])
                     channel = message["channel"]
-                    # Extract group name from channel (remove '_channel' suffix)
-                    group = channel.replace('_channel', '') if channel.endswith('_channel') else channel
+                    # Extract group name from channel (remove 'status:' prefix)
+                    group = channel.replace('status:', '') if channel.startswith('status:') else channel
                     
                     self.log_message.emit(f"[{get_timestamp()}] Received from {channel}: {data}")
                     status = data.get('status', 'error')
@@ -2000,6 +2914,29 @@ class BusylightApp(QMainWindow):
         
         user_layout.addWidget(redis_container)
         
+        # Add spacing between Redis and Analytics
+        user_layout.addSpacing(20)
+        
+        # Analytics button
+        self.analytics_button = QPushButton("View Analytics")
+        self.analytics_button.clicked.connect(self.show_analytics_dashboard)
+        self.analytics_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        user_layout.addWidget(self.analytics_button)
+        
         user_group.setLayout(user_layout)
         layout.addWidget(user_group)
         
@@ -2351,6 +3288,10 @@ class BusylightApp(QMainWindow):
         config_action = tray_menu.addAction("Configuration")
         config_action.triggered.connect(self.show_config_dialog)
         
+        # Add analytics option
+        analytics_action = tray_menu.addAction("View Analytics")
+        analytics_action.triggered.connect(self.show_analytics_dashboard)
+        
         # Add other actions
         show_action = tray_menu.addAction("Show")
         show_action.triggered.connect(self.show_and_raise)
@@ -2650,11 +3591,12 @@ class BusylightApp(QMainWindow):
                 self.add_log(f"[{get_timestamp()}] Cannot refresh from Redis: Redis not connected")
                 return
                 
-            # Try to get the most recent status from any group queue
+            # Try to get the most recent status from group-specific status keys
             for group in self.redis_worker.groups:
-                queue_name = f"{group}_channel"
+                status_key = f"status:{group}"
                 try:
-                    latest = self.redis_worker.redis_client.lindex(queue_name, -1)
+                    # Get the most recent status event for this group
+                    latest = self.redis_worker.redis_client.lindex(status_key, 0)  # Most recent is at index 0
                     if latest:
                         try:
                             data = json.loads(latest)
@@ -2664,13 +3606,14 @@ class BusylightApp(QMainWindow):
                                 # Apply the status
                                 self.light_controller.set_status(status)
                                 return  # Use the first status found
-                        except Exception as e:
+                        except json.JSONDecodeError as e:
                             self.add_log(f"[{get_timestamp()}] Error parsing Redis message from {group}: {e}")
+                            continue
                 except Exception as e:
-                    self.add_log(f"[{get_timestamp()}] Error accessing queue {queue_name}: {e}")
+                    self.add_log(f"[{get_timestamp()}] Error accessing status key {status_key}: {e}")
             
-            # If we get here, no messages were found in any queue
-            self.add_log(f"[{get_timestamp()}] No messages found in any Redis queue")
+            # If we get here, no messages were found in any status key
+            self.add_log(f"[{get_timestamp()}] No messages found in any Redis status key")
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error retrieving status from Redis: {e}")
 
@@ -3050,6 +3993,48 @@ class BusylightApp(QMainWindow):
         """Complete initialization tasks after the UI is ready"""
         self.is_initializing = False
         self.add_log(f"[{get_timestamp()}] Initialization complete - TTS now active for new events")
+
+    def show_analytics_dashboard(self):
+        """Show the analytics dashboard"""
+        if hasattr(self, 'analytics_dashboard') and self.analytics_dashboard:
+            # If dashboard is already open, bring it to front
+            self.analytics_dashboard.show()
+            self.analytics_dashboard.raise_()
+            self.analytics_dashboard.activateWindow()
+        else:
+            # Create new dashboard
+            self.analytics_dashboard = AnalyticsDashboard(self.redis_info, self.username, self.password, self)
+            self.analytics_dashboard.show()
+    
+    def restart_worker(self):
+        """Restart the Redis worker with current settings"""
+        # Set initialization flag to prevent TTS during restart
+        self.is_initializing = True
+        
+        # Stop existing worker if it exists
+        if hasattr(self, 'redis_worker') and self.redis_worker:
+            self.redis_worker.stop()
+        if hasattr(self, 'worker_thread') and self.worker_thread:
+            self.worker_thread.quit()
+            self.worker_thread.wait(1000)  # Wait up to 1 second
+        
+        # Create new worker with updated settings
+        self.worker_thread = QThread()
+        self.redis_worker = RedisWorker(redis_info=self.redis_info)
+        self.redis_worker.moveToThread(self.worker_thread)
+        self.redis_worker.log_message.connect(self.add_log)
+        self.redis_worker.status_updated.connect(self.light_controller.set_status)
+        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
+        self.redis_worker.ticket_received.connect(self.process_ticket_info)
+        self.redis_worker.group_status_updated.connect(self.update_group_status)
+        self.worker_thread.started.connect(self.redis_worker.run)
+        
+        # Start the new worker
+        self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
+        self.worker_thread.start()
+        
+        # Complete initialization after a delay to allow historical events to load
+        QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
 
 # Main application
 def main():
