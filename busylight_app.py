@@ -11,11 +11,11 @@ import redis
 import asyncio
 import requests
 import dotenv
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QLabel, QPushButton, QComboBox, QSystemTrayIcon, 
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                            QLabel, QPushButton, QComboBox, QSystemTrayIcon,
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
-                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy)
+                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
 import subprocess
@@ -2277,7 +2277,8 @@ class RedisWorker(QObject):
             self.redis_host = redis_info['host']  # Use host as-is from API
             self.redis_port = redis_info['port']
             self.redis_password = redis_info['password']  # Could be None
-            self.groups = redis_info['groups']
+            # Subscribe to all groups if available, otherwise use user's groups
+            self.groups = redis_info.get('all_groups', redis_info['groups'])
         else:
             # Fallback to default values if no redis_info provided
             self.redis_host = "localhost"
@@ -2362,7 +2363,7 @@ class RedisWorker(QObject):
                     status = group_found_status[group]['status']
                     data = group_found_status[group]['data']
                     self.group_status_updated.emit(group, status, data)
-                    self.process_ticket_info(data)
+                    self.process_ticket_info(data, group)
                 else:
                     # No recent event found, default to normal
                     self.log_message.emit(f"[{get_timestamp()}] No recent status found for group '{group}', defaulting to normal")
@@ -2407,7 +2408,7 @@ class RedisWorker(QObject):
                     self.status_updated.emit(status)
                     
                     # Process ticket information if available
-                    self.process_ticket_info(data)
+                    self.process_ticket_info(data, group)
                 except Exception as e:
                     self.log_message.emit(f"[{get_timestamp()}] Error processing message: {e}")
                     self.status_updated.emit('error')
@@ -2415,14 +2416,15 @@ class RedisWorker(QObject):
             # Small sleep to prevent CPU hogging
             QThread.msleep(100)
     
-    def process_ticket_info(self, data):
+    def process_ticket_info(self, data, group):
         """Extract and process ticket information from a message"""
         # Check if this is a ticket message with required fields
         if 'ticket' in data and 'status' in data:
             ticket_info = {
                 'ticket': data.get('ticket', ''),
                 'summary': data.get('summary', ''),
-                'url': data.get('url', '')
+                'zoho_ticket_url': data.get('zoho_ticket_url', ''),
+                'group': group
             }
             
             # Emit the ticket info for the main app to handle
@@ -2942,16 +2944,16 @@ class BusylightApp(QMainWindow):
         
         # Dynamic Group Status Section
         if self.redis_info and 'groups' in self.redis_info:
-            groups_group = QGroupBox("Group Status Monitor")
-            
+            groups_main = QGroupBox("Group Status Monitor")
+
             # Set bold font directly using Qt's font system
             bold_font = QFont()
             bold_font.setBold(True)
             bold_font.setPointSize(12)  # Larger size for prominence
-            groups_group.setFont(bold_font)
-            
+            groups_main.setFont(bold_font)
+
             # Apply adaptive styling to the main Group Status Monitor
-            groups_group.setStyleSheet(f"""
+            groups_main.setStyleSheet(f"""
                 QGroupBox {{
                     border: none;
                     border-radius: 12px;
@@ -2970,13 +2972,43 @@ class BusylightApp(QMainWindow):
                     font-size: 16px;
                 }}
             """)
-            
-            groups_layout = QVBoxLayout()
-            
-            # Create a scrollable area for groups
-            scroll_area = QScrollArea()
-            scroll_area.setWidgetResizable(True)
-            scroll_area.setStyleSheet(f"""
+
+            groups_main_layout = QVBoxLayout()
+
+            # Create tab widget
+            tab_widget = QTabWidget()
+            tab_widget.setStyleSheet(f"""
+                QTabWidget::pane {{
+                    border: 1px solid {colors['border_secondary']};
+                    border-radius: 8px;
+                    background: transparent;
+                }}
+                QTabBar::tab {{
+                    background: {colors['bg_secondary']};
+                    color: {colors['text_primary']};
+                    padding: 8px 16px;
+                    margin-right: 2px;
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                    font-weight: 600;
+                }}
+                QTabBar::tab:selected {{
+                    background: {colors['accent_blue']};
+                    color: {colors['bg_primary']};
+                }}
+                QTabBar::tab:hover {{
+                    background: {colors['hover_bg']};
+                }}
+            """)
+
+            # Tab 1: My Groups (full functionality)
+            my_groups_tab = QWidget()
+            my_groups_layout = QVBoxLayout(my_groups_tab)
+
+            # Create a scrollable area for my groups
+            my_scroll_area = QScrollArea()
+            my_scroll_area.setWidgetResizable(True)
+            my_scroll_area.setStyleSheet(f"""
                 QScrollArea {{
                     border: none;
                     background: transparent;
@@ -2995,170 +3027,91 @@ class BusylightApp(QMainWindow):
                     background: {colors['accent_blue']};
                 }}
             """)
-            scroll_widget = QWidget()
-            scroll_widget.setStyleSheet(f"background: transparent;")
-            scroll_layout = QVBoxLayout(scroll_widget)
-            
-            # Create status widget for each group
+            my_scroll_widget = QWidget()
+            my_scroll_widget.setStyleSheet(f"background: transparent;")
+            my_scroll_layout = QVBoxLayout(my_scroll_widget)
+
+            # Create status widget for each group the user belongs to
             for group in self.redis_info['groups']:
-                group_widget = QGroupBox(f"Group: {group}")
-                
-                # Set bold font directly using Qt's font system
-                bold_font = QFont()
-                bold_font.setBold(True)
-                bold_font.setPointSize(12)  # Larger size for prominence
-                group_widget.setFont(bold_font)
-                
-                group_widget.setStyleSheet(f"""
-                    QGroupBox {{
-                        border: none;
-                        border-radius: 12px;
-                        margin: 8px;
-                        padding: 16px;
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
-                        border: 2px solid {colors['border_secondary']};
-                    }}
-                    QGroupBox:hover {{
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {colors['bg_primary']}, stop:1 {colors['hover_bg']});
-                        border: 2px solid {colors['accent_blue']};
-                    }}
-                    QGroupBox::title {{
-                        subcontrol-origin: margin;
-                        left: 16px;
-                        padding: 0 8px 0 8px;
-                        color: {colors['text_primary']};
-                        font-weight: 800;
-                        font-size: 16px;
-                    }}
-                """)
-                group_layout = QHBoxLayout() 
-                group_layout.setSpacing(16)
-                group_layout.setContentsMargins(0, 0, 0, 0)
-                
-                # Left side: Status display area
-                status_container = QWidget()
-                status_container_layout = QVBoxLayout(status_container)
-                status_container_layout.setContentsMargins(0, 0, 0, 0)
-                status_container_layout.setSpacing(8)
-                status_container_layout.setAlignment(Qt.AlignCenter)
-                
-                # Square status color bar with modern styling
-                status_label = QLabel("Unknown")
-                status_label.setStyleSheet(f"""
-                    font-size: 11px;
-                    font-weight: 700;
-                    padding: 12px;
-                    border-radius: 16px;
-                    min-width: 90px;
-                    min-height: 90px;
-                    max-width: 90px;
-                    max-height: 90px;
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
-                    border: 2px solid {colors['border_secondary']};
-                    color: {colors['text_muted']};
-                """)
-                status_label.setAlignment(Qt.AlignCenter)
-                status_label.setFixedSize(90, 90)
-                status_container_layout.addWidget(status_label, alignment=Qt.AlignCenter)
-                
-                # Timestamp label
-                timestamp_label = QLabel("Last Update: Never")
-                timestamp_label.setStyleSheet(f"color: {colors['text_muted']}; font-size: 9px; font-style: italic;")
-                timestamp_label.setAlignment(Qt.AlignCenter)
-                status_container_layout.addWidget(timestamp_label, alignment=Qt.AlignCenter)
-                
-                group_layout.addWidget(status_container)
-                
-                # Right side: Event history display
-                history_container = QWidget()
-                history_layout = QVBoxLayout(history_container)
-                history_layout.setContentsMargins(0, 0, 0, 0)
-                history_layout.setSpacing(8)
-                
-                # Event history label with modern styling
-                event_history_label = QLabel("Event History")
-                event_history_label.setStyleSheet(f"""
-                    font-weight: 600;
-                    color: {colors['text_primary']};
-                    font-size: 12px;
-                    padding: 4px 0;
-                """)
-                history_layout.addWidget(event_history_label)
-                
-                # Event history text area with modern styling
-                event_history_text = QTextEdit()
-                event_history_text.setReadOnly(True)
-                event_history_text.setMinimumHeight(90)
-                event_history_text.setStyleSheet(f"""
-                    font-size: 10px;
-                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                    background: {colors['input_bg']};
-                    border: 1px solid {colors['input_border']};
-                    border-radius: 8px;
-                    padding: 8px;
-                    color: {colors['text_secondary']};
-                    selection-background-color: {colors['accent_blue']};
-                    selection-color: {colors['bg_primary']};
-                """)
-                history_layout.addWidget(event_history_text)
-                
-                group_layout.addWidget(history_container)
-                
-                group_widget.setLayout(group_layout)
-                scroll_layout.addWidget(group_widget)
-                
-                # Make the group widget clickable with tactile effect
-                def create_click_handler(group_name, widget):
-                    def mouse_press_event(event):
-                        # Add pressed effect while preserving bold title
-                        widget.setStyleSheet(f"""
-                            QGroupBox {{ 
-                                border: 2px solid {colors['accent_blue']}; 
-                                border-radius: 12px; 
-                                margin: 7px; 
-                                padding: 16px; 
-                                background-color: {colors['hover_bg']}; 
-                            }} 
-                            QGroupBox::title {{ 
-                                subcontrol-origin: margin; 
-                                left: 16px; 
-                                padding: 0 8px 0 8px; 
-                                color: {colors['text_primary']}; 
-                                font-weight: 800; 
-                                font-size: 16px; 
-                            }}
-                        """)
-                        
-                        # Ensure the font remains bold
-                        bold_font = QFont()
-                        bold_font.setBold(True)
-                        bold_font.setPointSize(12)
-                        widget.setFont(bold_font)
-                        
-                        QApplication.processEvents()  # Force immediate update
-                        
-                        # Small delay for tactile effect
-                        QTimer.singleShot(100, lambda: self.complete_group_click(group_name, widget))
-                    
-                    return mouse_press_event
-                
-                group_widget.mousePressEvent = create_click_handler(group, group_widget)
-                
-                # Store references for updates
-                self.group_widgets[group] = {
-                    'widget': group_widget,
-                    'status_label': status_label,
-                    'timestamp_label': timestamp_label,
-                    'event_history_text': event_history_text
-                }
-            
-            scroll_area.setWidget(scroll_widget)
-            groups_layout.addWidget(scroll_area)
-            groups_group.setLayout(groups_layout)
-            layout.addWidget(groups_group)
+                group_widget = self.create_full_group_widget(group, colors)
+                my_scroll_layout.addWidget(group_widget)
+
+            my_scroll_area.setWidget(my_scroll_widget)
+            my_groups_layout.addWidget(my_scroll_area)
+
+            # Tab 2: All Groups Overview (compact view)
+            all_groups_tab = QWidget()
+            all_groups_layout = QVBoxLayout(all_groups_tab)
+
+            # Create a scrollable area for all groups
+            all_scroll_area = QScrollArea()
+            all_scroll_area.setWidgetResizable(True)
+            all_scroll_area.setStyleSheet(f"""
+                QScrollArea {{
+                    border: none;
+                    background: transparent;
+                }}
+                QScrollBar:vertical {{
+                    background: {colors['bg_secondary']};
+                    width: 12px;
+                    border-radius: 6px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {colors['text_muted']};
+                    border-radius: 6px;
+                    min-height: 20px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {colors['accent_blue']};
+                }}
+            """)
+            all_scroll_widget = QWidget()
+            all_scroll_widget.setStyleSheet(f"background: transparent;")
+            all_scroll_layout = QVBoxLayout(all_scroll_widget)
+
+            # Create compact widgets for all groups (excluding user's groups)
+            if 'all_groups' in self.redis_info:
+                user_groups = set(self.redis_info['groups'])
+                other_groups = [g for g in self.redis_info['all_groups'] if g not in user_groups]
+
+                if other_groups:
+                    # Create a grid layout for compact view
+                    grid_layout = QGridLayout()
+                    grid_layout.setSpacing(8)
+
+                    row, col = 0, 0
+                    max_cols = 4  # 4 compact widgets per row
+
+                    for group in other_groups:
+                        compact_widget = self.create_compact_group_widget(group, colors)
+                        grid_layout.addWidget(compact_widget, row, col)
+
+                        col += 1
+                        if col >= max_cols:
+                            col = 0
+                            row += 1
+
+                    # Create container widget for grid
+                    grid_container = QWidget()
+                    grid_container.setLayout(grid_layout)
+                    all_scroll_layout.addWidget(grid_container)
+                else:
+                    # No other groups message
+                    no_groups_label = QLabel("No other groups available")
+                    no_groups_label.setAlignment(Qt.AlignCenter)
+                    no_groups_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; padding: 20px;")
+                    all_scroll_layout.addWidget(no_groups_label)
+
+            all_scroll_area.setWidget(all_scroll_widget)
+            all_groups_layout.addWidget(all_scroll_area)
+
+            # Add tabs to the tab widget
+            tab_widget.addTab(my_groups_tab, "My Groups")
+            tab_widget.addTab(all_groups_tab, "All Groups Overview")
+
+            groups_main_layout.addWidget(tab_widget)
+            groups_main.setLayout(groups_main_layout)
+            layout.addWidget(groups_main)
         else:
             # Fallback single status display if no groups
             status_group = QGroupBox("Status")
@@ -3664,19 +3617,23 @@ class BusylightApp(QMainWindow):
         # Log the ticket information
         ticket_id = ticket_info.get('ticket', 'Unknown')
         summary = ticket_info.get('summary', '')
-        url = ticket_info.get('url', '')
-        
+        zoho_ticket_url = ticket_info.get('zoho_ticket_url', '')
+        group = ticket_info.get('group', '')
+
         self.add_log(f"[{get_timestamp()}] Ticket #{ticket_id} received")
-        
+
         if summary:
             self.add_log(f"[{get_timestamp()}] Summary: {summary}")
             # Handle text-to-speech if enabled
             self.speak_ticket_summary(summary)
-            
-        if url:
-            self.add_log(f"[{get_timestamp()}] URL: {url}")
-            # Handle URL opening if enabled
-            self.open_ticket_url(url)
+
+        if zoho_ticket_url:
+            self.add_log(f"[{get_timestamp()}] Zoho ticket URL: {zoho_ticket_url}")
+            # Handle URL opening if enabled and user belongs to the group
+            if self.redis_info and group in self.redis_info.get('groups', []):
+                self.open_ticket_url(zoho_ticket_url)
+            else:
+                self.add_log(f"[{get_timestamp()}] URL popup skipped - user not a member of group '{group}'")
     
     def speak_ticket_summary(self, summary):
         """Speak the ticket summary using the configured command"""
@@ -3798,10 +3755,11 @@ class BusylightApp(QMainWindow):
             'data': data
         }
         
-        # Trigger text-to-speech announcement for this status event if TTS is enabled
-        self.speak_group_status_event(group, status, data)
+        # Trigger text-to-speech announcement only for groups the user is a member of
+        if self.redis_info and group in self.redis_info.get('groups', []):
+            self.speak_group_status_event(group, status, data)
         
-        # Update the UI widget for this group
+        # Update the UI widget for this group (full widget for user's groups)
         if group in self.group_widgets:
             widgets = self.group_widgets[group]
             status_label = widgets['status_label']
@@ -3876,7 +3834,74 @@ class BusylightApp(QMainWindow):
             
             # Parse and display event information in the group's history
             self.parse_and_display_event(group, status, data, event_history_text)
-            
+
+        # Also update compact widget for this group if it exists (for all groups overview)
+        elif hasattr(self, 'all_group_widgets') and group in self.all_group_widgets:
+            compact_widgets = self.all_group_widgets[group]
+            compact_status_label = compact_widgets['status_label']
+
+            # Update compact status text and color
+            status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
+            compact_status_label.setText(status_name)
+
+            # Get adaptive colors for styling
+            colors = get_adaptive_colors()
+
+            # Set compact background color based on status
+            if status in self.light_controller.COLOR_MAP:
+                r, g, b = self.light_controller.COLOR_MAP[status]
+                if status == 'off':
+                    compact_status_label.setStyleSheet(f"""
+                        font-size: 8px;
+                        font-weight: 600;
+                        padding: 6px;
+                        border-radius: 12px;
+                        min-width: 50px;
+                        min-height: 30px;
+                        max-width: 50px;
+                        max-height: 30px;
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
+                        border: 1px solid {colors['border_secondary']};
+                        color: {colors['text_muted']};
+                    """)
+                else:
+                    # Create a subtle gradient for active statuses
+                    brightness = (r + g + b) / 3
+                    text_color = "#000000" if brightness > 128 else "#ffffff"
+
+                    compact_status_label.setStyleSheet(f"""
+                        font-size: 8px;
+                        font-weight: 600;
+                        padding: 6px;
+                        border-radius: 12px;
+                        min-width: 50px;
+                        min-height: 30px;
+                        max-width: 50px;
+                        max-height: 30px;
+                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                            stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
+                            stop:1 rgb({r}, {g}, {b}));
+                        border: 1px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
+                        color: {text_color};
+                    """)
+            else:
+                # Default styling for unknown status
+                compact_status_label.setStyleSheet(f"""
+                    font-size: 8px;
+                    font-weight: 600;
+                    padding: 6px;
+                    border-radius: 12px;
+                    min-width: 50px;
+                    min-height: 30px;
+                    max-width: 50px;
+                    max-height: 30px;
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
+                    border: 1px solid {colors['border_secondary']};
+                    color: {colors['text_muted']};
+                """)
+
         else:
             # Fallback logging if no UI widget found
             print(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
@@ -3933,7 +3958,242 @@ class BusylightApp(QMainWindow):
     
     # simulate_status_change method removed to prevent duplicate events
     # The real events now come from Redis after API submission
-    
+
+    def create_full_group_widget(self, group, colors):
+        """Create a full-featured group widget with event history and clickability"""
+        group_widget = QGroupBox(f"Group: {group}")
+
+        # Set bold font directly using Qt's font system
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)  # Larger size for prominence
+        group_widget.setFont(bold_font)
+
+        group_widget.setStyleSheet(f"""
+            QGroupBox {{
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['hover_bg']});
+                border: 2px solid {colors['accent_blue']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: {colors['text_primary']};
+                font-weight: 800;
+                font-size: 16px;
+            }}
+        """)
+        group_layout = QHBoxLayout()
+        group_layout.setSpacing(16)
+        group_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Left side: Status display area
+        status_container = QWidget()
+        status_container.setFixedWidth(130)  # Fixed width to ensure consistent alignment
+        status_container_layout = QVBoxLayout(status_container)
+        status_container_layout.setContentsMargins(0, 0, 0, 0)
+        status_container_layout.setSpacing(8)
+        status_container_layout.setAlignment(Qt.AlignCenter)
+
+        # Square status color bar with modern styling
+        status_label = QLabel("Green\n(Normal)")
+        # Apply default 'normal' styling using the existing color system
+        r, g, b = self.light_controller.COLOR_MAP['normal']
+        brightness = (r + g + b) / 3
+        text_color = "#000000" if brightness > 128 else "#ffffff"
+        status_label.setStyleSheet(f"""
+            font-size: 11px;
+            font-weight: 700;
+            padding: 12px;
+            border-radius: 16px;
+            min-width: 90px;
+            min-height: 90px;
+            max-width: 90px;
+            max-height: 90px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
+                stop:1 rgb({r}, {g}, {b}));
+            border: 2px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
+            color: {text_color};
+        """)
+        status_label.setAlignment(Qt.AlignCenter)
+        status_label.setFixedSize(90, 90)
+        status_container_layout.addWidget(status_label, alignment=Qt.AlignCenter)
+
+        # Timestamp label
+        timestamp_label = QLabel("Last Update: Never")
+        timestamp_label.setStyleSheet(f"color: {colors['text_muted']}; font-size: 9px; font-style: italic;")
+        timestamp_label.setAlignment(Qt.AlignCenter)
+        status_container_layout.addWidget(timestamp_label, alignment=Qt.AlignCenter)
+
+        group_layout.addWidget(status_container)
+
+        # Right side: Event history display
+        history_container = QWidget()
+        history_layout = QVBoxLayout(history_container)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        history_layout.setSpacing(8)
+
+        # Event history label with modern styling
+        event_history_label = QLabel("Event History")
+        event_history_label.setStyleSheet(f"""
+            font-weight: 600;
+            color: {colors['text_primary']};
+            font-size: 12px;
+            padding: 4px 0;
+        """)
+        history_layout.addWidget(event_history_label)
+
+        # Event history text area with modern styling
+        event_history_text = QTextEdit()
+        event_history_text.setReadOnly(True)
+        event_history_text.setMinimumHeight(90)
+        event_history_text.setStyleSheet(f"""
+            font-size: 10px;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background: {colors['input_bg']};
+            border: 1px solid {colors['input_border']};
+            border-radius: 8px;
+            padding: 8px;
+            color: {colors['text_secondary']};
+            selection-background-color: {colors['accent_blue']};
+            selection-color: {colors['bg_primary']};
+        """)
+        history_layout.addWidget(event_history_text)
+
+        group_layout.addWidget(history_container)
+
+        group_widget.setLayout(group_layout)
+
+        # Make the group widget clickable with tactile effect
+        def create_click_handler(group_name, widget):
+            def mouse_press_event(event):
+                # Add pressed effect while preserving bold title
+                widget.setStyleSheet(f"""
+                    QGroupBox {{
+                        border: 2px solid {colors['accent_blue']};
+                        border-radius: 12px;
+                        margin: 7px;
+                        padding: 16px;
+                        background-color: {colors['hover_bg']};
+                    }}
+                    QGroupBox::title {{
+                        subcontrol-origin: margin;
+                        left: 16px;
+                        padding: 0 8px 0 8px;
+                        color: {colors['text_primary']};
+                        font-weight: 800;
+                        font-size: 16px;
+                    }}
+                """)
+
+                # Ensure the font remains bold
+                bold_font = QFont()
+                bold_font.setBold(True)
+                bold_font.setPointSize(12)
+                widget.setFont(bold_font)
+
+                QApplication.processEvents()  # Force immediate update
+
+                # Small delay for tactile effect
+                QTimer.singleShot(100, lambda: self.complete_group_click(group_name, widget))
+
+            return mouse_press_event
+
+        group_widget.mousePressEvent = create_click_handler(group, group_widget)
+
+        # Store references for updates
+        self.group_widgets[group] = {
+            'widget': group_widget,
+            'status_label': status_label,
+            'timestamp_label': timestamp_label,
+            'event_history_text': event_history_text
+        }
+
+        return group_widget
+
+    def create_compact_group_widget(self, group, colors):
+        """Create a compact group widget showing only the status indicator"""
+        compact_widget = QGroupBox(group)
+        compact_widget.setFixedSize(120, 80)
+
+        # Set smaller font for compact view
+        compact_font = QFont()
+        compact_font.setBold(True)
+        compact_font.setPointSize(9)
+        compact_widget.setFont(compact_font)
+
+        compact_widget.setStyleSheet(f"""
+            QGroupBox {{
+                border: none;
+                border-radius: 8px;
+                margin: 4px;
+                padding: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 1px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px 0 4px;
+                color: {colors['text_primary']};
+                font-weight: 600;
+                font-size: 9px;
+            }}
+        """)
+
+        compact_layout = QVBoxLayout(compact_widget)
+        compact_layout.setContentsMargins(4, 8, 4, 4)
+        compact_layout.setSpacing(4)
+        compact_layout.setAlignment(Qt.AlignCenter)
+
+        # Small status indicator
+        status_indicator = QLabel("Normal")
+        # Apply default 'normal' styling using the existing color system
+        r, g, b = self.light_controller.COLOR_MAP['normal']
+        brightness = (r + g + b) / 3
+        text_color = "#000000" if brightness > 128 else "#ffffff"
+        status_indicator.setStyleSheet(f"""
+            font-size: 8px;
+            font-weight: 600;
+            padding: 6px;
+            border-radius: 12px;
+            min-width: 50px;
+            min-height: 30px;
+            max-width: 50px;
+            max-height: 30px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
+                stop:1 rgb({r}, {g}, {b}));
+            border: 1px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
+            color: {text_color};
+        """)
+        status_indicator.setAlignment(Qt.AlignCenter)
+        status_indicator.setFixedSize(50, 30)
+        compact_layout.addWidget(status_indicator, alignment=Qt.AlignCenter)
+
+        # Store reference for status updates (but no event history)
+        if not hasattr(self, 'all_group_widgets'):
+            self.all_group_widgets = {}
+
+        self.all_group_widgets[group] = {
+            'widget': compact_widget,
+            'status_label': status_indicator
+        }
+
+        return compact_widget
+
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
         # Get adaptive colors for styling
