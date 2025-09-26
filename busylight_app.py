@@ -2418,18 +2418,19 @@ class RedisWorker(QObject):
     
     def process_ticket_info(self, data, group):
         """Extract and process ticket information from a message"""
-        # Check if this is a ticket message with required fields
-        if 'ticket' in data and 'status' in data:
+        # Check if this is a ticket message with required fields or has zoho_ticket_url
+        if ('ticket' in data and 'status' in data) or 'zoho_ticket_url' in data:
             ticket_info = {
                 'ticket': data.get('ticket', ''),
                 'summary': data.get('summary', ''),
                 'zoho_ticket_url': data.get('zoho_ticket_url', ''),
                 'group': group
             }
-            
+
             # Emit the ticket info for the main app to handle
-            if ticket_info['ticket']:
-                self.log_message.emit(f"[{get_timestamp()}] Ticket information received: #{ticket_info['ticket']}")
+            if ticket_info['ticket'] or ticket_info['zoho_ticket_url']:
+                ticket_id = ticket_info['ticket'] if ticket_info['ticket'] else 'URL-only'
+                self.log_message.emit(f"[{get_timestamp()}] Ticket information received: #{ticket_id}")
                 self.ticket_received.emit(ticket_info)
             
     def stop(self):
@@ -2812,13 +2813,13 @@ class BusylightApp(QMainWindow):
         QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
     
     def create_main_ui(self):
-        """Create the main UI components with dynamic group status displays"""
+        """Create the main UI components with tabbed interface"""
         main_widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Get adaptive colors for styling
         colors = get_adaptive_colors()
-        
+
         # Set the main window background color
         self.setStyleSheet(f"""
             QMainWindow {{
@@ -2830,7 +2831,7 @@ class BusylightApp(QMainWindow):
                 color: {colors['text_primary']};
             }}
         """)
-        
+
         # Set the main widget background
         main_widget.setStyleSheet(f"""
             QWidget {{
@@ -2838,110 +2839,51 @@ class BusylightApp(QMainWindow):
                 color: {colors['text_primary']};
             }}
         """)
-        
-        # User info section
-        user_group = QGroupBox("User Information")
-        
-        # Set bold font directly using Qt's font system
-        bold_font = QFont()
-        bold_font.setBold(True)
-        bold_font.setPointSize(12)  # Larger size for prominence
-        user_group.setFont(bold_font)
-        
-        user_group.setStyleSheet(f"""
-            QGroupBox {{
-                border: none;
-                border-radius: 12px;
-                margin: 8px;
-                padding: 16px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
-                border: 2px solid {colors['border_secondary']};
+
+        # Create main tab widget
+        self.main_tab_widget = QTabWidget()
+        self.main_tab_widget.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+                background: transparent;
             }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 16px;
-                padding: 0 8px 0 8px;
+            QTabBar::tab {{
+                background: {colors['bg_secondary']};
                 color: {colors['text_primary']};
-                font-weight: 800;
-                font-size: 16px;
-            }}
-        """)
-        user_layout = QHBoxLayout()  # Changed to horizontal layout
-        
-        if self.username:
-            self.user_label = QLabel(f"Logged in as: {self.username}")
-            self.user_label.setStyleSheet(f"color: {colors['accent_blue']}; font-weight: 500; font-size: 14px;")
-            user_layout.addWidget(self.user_label)
-        
-        # Add some spacing
-        user_layout.addStretch()
-        
-        # Device info with colored dot
-        device_container = QWidget()
-        device_layout = QHBoxLayout(device_container)
-        device_layout.setContentsMargins(0, 0, 0, 0)
-        device_layout.setSpacing(8)
-        
-        self.device_label = QLabel("Busylight: Disconnected")
-        self.device_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
-        device_layout.addWidget(self.device_label)
-        
-        # Connection status dot
-        self.connection_dot = QLabel("●")
-        self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
-        self.connection_dot.setToolTip("Busylight: Disconnected")
-        device_layout.addWidget(self.connection_dot)
-        
-        user_layout.addWidget(device_container)
-        
-        # Add spacing between device and Redis
-        user_layout.addSpacing(20)
-        
-        # Redis connection info with colored dot
-        redis_container = QWidget()
-        redis_layout = QHBoxLayout(redis_container)
-        redis_layout.setContentsMargins(0, 0, 0, 0)
-        redis_layout.setSpacing(8)
-        
-        self.redis_connection_label = QLabel("Disconnected")
-        self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
-        redis_layout.addWidget(self.redis_connection_label)
-        
-        # Redis connection status dot
-        self.redis_connection_dot = QLabel("●")
-        self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
-        self.redis_connection_dot.setToolTip("Disconnected")
-        redis_layout.addWidget(self.redis_connection_dot)
-        
-        user_layout.addWidget(redis_container)
-        
-        # Add spacing between Redis and Analytics
-        user_layout.addSpacing(20)
-        
-        # Analytics button
-        self.analytics_button = QPushButton("View Analytics")
-        self.analytics_button.clicked.connect(self.show_analytics_dashboard)
-        self.analytics_button.setStyleSheet(f"""
-            QPushButton {{
-                background: {colors['accent_blue']};
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
+                padding: 12px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
                 font-weight: 600;
-                font-size: 13px;
+                font-size: 14px;
             }}
-            QPushButton:hover {{
+            QTabBar::tab:selected {{
+                background: {colors['accent_blue']};
+                color: {colors['bg_primary']};
+            }}
+            QTabBar::tab:hover {{
                 background: {colors['hover_bg']};
-                color: {colors['text_primary']};
             }}
         """)
-        user_layout.addWidget(self.analytics_button)
-        
-        user_group.setLayout(user_layout)
-        layout.addWidget(user_group)
-        
+
+        # Create individual tabs
+        self.create_status_monitor_tab(colors)
+        self.create_analytics_tab(colors)
+        self.create_configuration_tab(colors)
+
+        layout.addWidget(self.main_tab_widget)
+        main_widget.setLayout(layout)
+        self.setCentralWidget(main_widget)
+
+        # Set window size
+        self.resize(900, 800)
+
+    def create_status_monitor_tab(self, colors):
+        """Create the Status Monitor tab"""
+        status_tab = QWidget()
+        layout = QVBoxLayout(status_tab)
+
         # Dynamic Group Status Section
         if self.redis_info and 'groups' in self.redis_info:
             groups_main = QGroupBox("Group Status Monitor")
@@ -2975,7 +2917,7 @@ class BusylightApp(QMainWindow):
 
             groups_main_layout = QVBoxLayout()
 
-            # Create tab widget
+            # Create tab widget for My Groups / All Groups
             tab_widget = QTabWidget()
             tab_widget.setStyleSheet(f"""
                 QTabWidget::pane {{
@@ -3115,13 +3057,13 @@ class BusylightApp(QMainWindow):
         else:
             # Fallback single status display if no groups
             status_group = QGroupBox("Status")
-            
+
             # Set bold font directly using Qt's font system
             bold_font = QFont()
             bold_font.setBold(True)
             bold_font.setPointSize(12)
             status_group.setFont(bold_font)
-            
+
             # Apply adaptive styling to the fallback status group
             status_group.setStyleSheet(f"""
                 QGroupBox {{
@@ -3142,31 +3084,324 @@ class BusylightApp(QMainWindow):
                     font-size: 16px;
                 }}
             """)
-            
+
             status_layout = QVBoxLayout()
-            
+
             self.status_label = QLabel("Status: Off")
             self.status_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors['text_primary']};")
             self.status_label.setAlignment(Qt.AlignCenter)
             status_layout.addWidget(self.status_label)
-            
+
             status_group.setLayout(status_layout)
             layout.addWidget(status_group)
-        
-        # Log section - commented out since we're using group-specific event history
-        # log_group = QGroupBox("Log")
-        # log_layout = QVBoxLayout()
-        # self.log_text = QTextEdit()
-        # self.log_text.setReadOnly(True)
-        # log_layout.addWidget(self.log_text)
-        # log_group.setLayout(log_layout)
-        # layout.addWidget(log_group)
-        
-        main_widget.setLayout(layout)
-        self.setCentralWidget(main_widget)
-        
-        # Set window size
-        self.resize(900, 800)
+
+        self.main_tab_widget.addTab(status_tab, "Status Monitor")
+
+
+    def create_configuration_tab(self, colors):
+        """Create the Configuration tab with User Information and Settings"""
+        config_tab = QWidget()
+        config_layout = QVBoxLayout(config_tab)
+
+        # Create scrollable area for configuration content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: {colors['bg_secondary']};
+                width: 12px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['text_muted']};
+                border-radius: 6px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        scroll_widget = QWidget()
+        scroll_widget.setStyleSheet(f"background: transparent;")
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        # Add user information section at the top
+        self.create_user_info_section(scroll_layout, colors)
+
+        # Add configuration content
+        self.create_config_content(scroll_layout, colors)
+
+        scroll_area.setWidget(scroll_widget)
+        config_layout.addWidget(scroll_area)
+
+        # Add apply button at the bottom
+        apply_button = QPushButton("Apply Settings")
+        apply_button.clicked.connect(lambda: self.apply_config_settings())
+        apply_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 14px;
+                margin: 8px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        config_layout.addWidget(apply_button)
+
+        self.main_tab_widget.addTab(config_tab, "Configuration")
+
+    def create_user_info_section(self, layout, colors):
+        """Create the user information section"""
+        # User info section
+        user_group = QGroupBox("User Information")
+
+        # Set bold font
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)
+        user_group.setFont(bold_font)
+
+        user_group.setStyleSheet(f"""
+            QGroupBox {{
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: {colors['text_primary']};
+                font-weight: 800;
+                font-size: 16px;
+            }}
+        """)
+
+        user_layout = QHBoxLayout()
+
+        if self.username:
+            self.user_label = QLabel(f"Logged in as: {self.username}")
+            self.user_label.setStyleSheet(f"color: {colors['accent_blue']}; font-weight: 500; font-size: 14px;")
+            user_layout.addWidget(self.user_label)
+
+        # Add some spacing
+        user_layout.addStretch()
+
+        # Device info with colored dot
+        device_container = QWidget()
+        device_layout = QHBoxLayout(device_container)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.setSpacing(8)
+
+        self.device_label = QLabel("Busylight: Disconnected")
+        self.device_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
+        device_layout.addWidget(self.device_label)
+
+        # Connection status dot
+        self.connection_dot = QLabel("●")
+        self.connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
+        self.connection_dot.setToolTip("Busylight: Disconnected")
+        device_layout.addWidget(self.connection_dot)
+
+        user_layout.addWidget(device_container)
+
+        # Add spacing between device and Redis
+        user_layout.addSpacing(20)
+
+        # Redis connection info with colored dot
+        redis_container = QWidget()
+        redis_layout = QHBoxLayout(redis_container)
+        redis_layout.setContentsMargins(0, 0, 0, 0)
+        redis_layout.setSpacing(8)
+
+        self.redis_connection_label = QLabel("Disconnected")
+        self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
+        redis_layout.addWidget(self.redis_connection_label)
+
+        # Redis connection status dot
+        self.redis_connection_dot = QLabel("●")
+        self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
+        self.redis_connection_dot.setToolTip("Disconnected")
+        redis_layout.addWidget(self.redis_connection_dot)
+
+        user_layout.addWidget(redis_container)
+
+        user_group.setLayout(user_layout)
+        layout.addWidget(user_group)
+
+    def create_config_content(self, layout, colors):
+        """Create the configuration content widgets"""
+        # Load settings
+        settings = QSettings("Busylight", "BusylightController")
+
+        # Common QGroupBox styling
+        group_style = f"""
+            QGroupBox {{
+                border: none;
+                border-radius: 12px;
+                margin: 8px;
+                padding: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+                border: 2px solid {colors['border_secondary']};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 8px 0 8px;
+                color: {colors['text_primary']};
+                font-weight: 800;
+                font-size: 16px;
+            }}
+        """
+
+        # Common checkbox styling
+        checkbox_style = f"""
+            QCheckBox {{
+                font-size: 14px;
+                color: {colors['text_primary']};
+                font-weight: 500;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 20px;
+                height: 20px;
+                border-radius: 4px;
+                border: 2px solid {colors['border_secondary']};
+                background: {colors['bg_primary']};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent_blue']};
+                border-color: {colors['accent_blue']};
+                image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iOSIgdmlld0JveD0iMCAwIDEyIDkiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDQuNUw0LjUgOEwxMSAxIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+            }}
+        """
+
+        # TTS Configuration Group
+        tts_group = QGroupBox("Text-to-Speech Configuration")
+
+        # Set bold font
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(12)
+        tts_group.setFont(bold_font)
+
+        tts_group.setStyleSheet(group_style)
+        tts_layout = QFormLayout(tts_group)
+        tts_layout.setSpacing(12)
+
+        self.tts_enabled_checkbox = QCheckBox()
+        self.tts_enabled_checkbox.setStyleSheet(checkbox_style)
+        self.tts_enabled_checkbox.setChecked(settings.value("tts/enabled", False, type=bool))
+        tts_layout.addRow("Enable TTS:", self.tts_enabled_checkbox)
+
+        layout.addWidget(tts_group)
+
+        # URL Configuration Group
+        url_group = QGroupBox("URL Handler Configuration")
+        url_group.setFont(bold_font)
+        url_group.setStyleSheet(group_style)
+        url_layout = QFormLayout(url_group)
+        url_layout.setSpacing(12)
+
+        self.url_enabled_checkbox = QCheckBox()
+        self.url_enabled_checkbox.setStyleSheet(checkbox_style)
+        self.url_enabled_checkbox.setChecked(settings.value("url/enabled", False, type=bool))
+        url_layout.addRow("Open URLs:", self.url_enabled_checkbox)
+
+        layout.addWidget(url_group)
+
+        # App Configuration Group
+        app_group = QGroupBox("Application Settings")
+        app_group.setFont(bold_font)
+        app_group.setStyleSheet(group_style)
+        app_layout = QFormLayout(app_group)
+        app_layout.setSpacing(12)
+
+        self.start_minimized_checkbox = QCheckBox()
+        self.start_minimized_checkbox.setStyleSheet(checkbox_style)
+        self.start_minimized_checkbox.setChecked(settings.value("app/start_minimized", False, type=bool))
+        app_layout.addRow("Start Minimized:", self.start_minimized_checkbox)
+
+        self.autostart_checkbox = QCheckBox()
+        self.autostart_checkbox.setStyleSheet(checkbox_style)
+        self.autostart_checkbox.setChecked(settings.value("app/autostart", False, type=bool))
+        app_layout.addRow("Autostart:", self.autostart_checkbox)
+
+        self.simulation_mode_checkbox = QCheckBox()
+        self.simulation_mode_checkbox.setStyleSheet(checkbox_style)
+        self.simulation_mode_checkbox.setChecked(settings.value("app/simulation_mode", True, type=bool))
+        app_layout.addRow("Simulation Mode:", self.simulation_mode_checkbox)
+
+        layout.addWidget(app_group)
+
+        # Add stretch to push content to top
+        layout.addStretch()
+
+    def create_analytics_tab(self, colors):
+        """Create the Analytics tab"""
+        analytics_tab = QWidget()
+        analytics_layout = QVBoxLayout(analytics_tab)
+
+        # Create embedded analytics dashboard
+        if hasattr(self, 'redis_info') and self.redis_info:
+            self.embedded_analytics = AnalyticsDashboard(self.redis_info, self.username, self.password)
+            # Remove dialog buttons since we're embedding
+            if hasattr(self.embedded_analytics, 'close_button'):
+                self.embedded_analytics.close_button.hide()
+
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setWidget(self.embedded_analytics)
+            analytics_layout.addWidget(scroll_area)
+
+            # Add refresh button at the bottom
+            refresh_button = QPushButton("Refresh Analytics")
+            refresh_button.clicked.connect(self.embedded_analytics.refresh_data)
+            refresh_button.setStyleSheet(f"""
+                QPushButton {{
+                    background: {colors['accent_blue']};
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 13px;
+                    margin: 8px;
+                }}
+                QPushButton:hover {{
+                    background: {colors['hover_bg']};
+                    color: {colors['text_primary']};
+                }}
+            """)
+            analytics_layout.addWidget(refresh_button)
+        else:
+            # Placeholder if no Redis info
+            placeholder = QLabel("Analytics will be available once connected to Redis")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; padding: 20px;")
+            analytics_layout.addWidget(placeholder)
+
+        self.main_tab_widget.addTab(analytics_tab, "Analytics")
         
     def setup_tray(self):
         # Create system tray icon
@@ -3241,9 +3476,7 @@ class BusylightApp(QMainWindow):
         config_action = tray_menu.addAction("Configuration")
         config_action.triggered.connect(self.show_config_dialog)
         
-        # Add analytics option
-        analytics_action = tray_menu.addAction("View Analytics")
-        analytics_action.triggered.connect(self.show_analytics_dashboard)
+        # Analytics is now accessed through the main window tabs
         
         # Add other actions
         show_action = tray_menu.addAction("Show")
@@ -3292,12 +3525,42 @@ class BusylightApp(QMainWindow):
         self.tray_icon.setIcon(QIcon(pixmap))
     
     def show_config_dialog(self):
-        """Show the configuration dialog"""
-        dialog = ConfigDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            # Restart the Redis worker with new settings
-            self.restart_worker()
-    
+        """Switch to the configuration tab"""
+        # Show the main window and switch to configuration tab
+        self.show_and_raise()
+
+        # Find the configuration tab index and switch to it
+        for i in range(self.main_tab_widget.count()):
+            if self.main_tab_widget.tabText(i) == "Configuration":
+                self.main_tab_widget.setCurrentIndex(i)
+                break
+
+    def apply_config_settings(self):
+        """Apply settings from the configuration tab"""
+        # Save settings from the configuration widgets
+        settings = QSettings("Busylight", "BusylightController")
+
+        # Save TTS settings
+        if hasattr(self, 'tts_enabled_checkbox'):
+            settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
+
+        # Save URL settings
+        if hasattr(self, 'url_enabled_checkbox'):
+            settings.setValue("url/enabled", self.url_enabled_checkbox.isChecked())
+
+        # Save app settings
+        if hasattr(self, 'start_minimized_checkbox'):
+            settings.setValue("app/start_minimized", self.start_minimized_checkbox.isChecked())
+        if hasattr(self, 'autostart_checkbox'):
+            settings.setValue("app/autostart", self.autostart_checkbox.isChecked())
+        if hasattr(self, 'simulation_mode_checkbox'):
+            settings.setValue("app/simulation_mode", self.simulation_mode_checkbox.isChecked())
+
+        self.add_log(f"[{get_timestamp()}] Settings applied successfully")
+
+        # Restart the Redis worker with new settings
+        self.restart_worker()
+
     def restart_worker(self):
         """Restart the Redis worker with current settings"""
         # Set initialization flag to prevent TTS during restart
@@ -3729,8 +3992,9 @@ class BusylightApp(QMainWindow):
         # Load URL settings
         settings = QSettings("Busylight", "BusylightController")
         url_enabled = settings.value("url/enabled", False, type=bool)
-        
+
         if not url_enabled:
+            self.add_log(f"[{get_timestamp()}] URL opening is disabled in configuration")
             return
             
         # Basic URL validation
@@ -4255,16 +4519,15 @@ class BusylightApp(QMainWindow):
         self.add_log(f"[{get_timestamp()}] Initialization complete - TTS now active for new events")
 
     def show_analytics_dashboard(self):
-        """Show the analytics dashboard"""
-        if hasattr(self, 'analytics_dashboard') and self.analytics_dashboard:
-            # If dashboard is already open, bring it to front
-            self.analytics_dashboard.show()
-            self.analytics_dashboard.raise_()
-            self.analytics_dashboard.activateWindow()
-        else:
-            # Create new dashboard
-            self.analytics_dashboard = AnalyticsDashboard(self.redis_info, self.username, self.password, self)
-            self.analytics_dashboard.show()
+        """Switch to the analytics tab"""
+        # Show the main window and switch to analytics tab
+        self.show_and_raise()
+
+        # Find the analytics tab index and switch to it
+        for i in range(self.main_tab_widget.count()):
+            if self.main_tab_widget.tabText(i) == "Analytics":
+                self.main_tab_widget.setCurrentIndex(i)
+                break
     
     def restart_worker(self):
         """Restart the Redis worker with current settings"""
