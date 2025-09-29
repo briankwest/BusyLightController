@@ -2277,13 +2277,15 @@ class RedisWorker(QObject):
             self.redis_host = redis_info['host']  # Use host as-is from API
             self.redis_port = redis_info['port']
             self.redis_password = redis_info['password']  # Could be None
-            # Subscribe to all groups if available, otherwise use user's groups
-            self.groups = redis_info.get('all_groups', redis_info['groups'])
+            # Track both user's groups (for overall status) and all groups (for monitoring)
+            self.user_groups = redis_info['groups']  # Groups user is a member of
+            self.groups = redis_info.get('all_groups', redis_info['groups'])  # All groups to subscribe to
         else:
             # Fallback to default values if no redis_info provided
             self.redis_host = "localhost"
             self.redis_port = 6379
             self.redis_password = None
+            self.user_groups = ["default"]
             self.groups = ["default"]
             
     def connect_to_redis(self):
@@ -2343,10 +2345,11 @@ class RedisWorker(QObject):
                                     'data': data
                                 }
                                 self.log_message.emit(f"[{get_timestamp()}] Found recent status for group '{group}': {event_status}")
-                                
-                                # Use first status found as overall status
-                                if latest_status is None:
+
+                                # Use first status found as overall status (only for user's groups)
+                                if latest_status is None and group in self.user_groups:
                                     latest_status = event_status
+                                    self.log_message.emit(f"[{get_timestamp()}] Setting initial overall status to '{latest_status}' from user group '{group}'")
                                     
                         except json.JSONDecodeError as e:
                             self.log_message.emit(f"[{get_timestamp()}] Error parsing status data for group '{group}': {e}")
@@ -2403,9 +2406,13 @@ class RedisWorker(QObject):
                     
                     # Emit group-specific status
                     self.group_status_updated.emit(group, status, data)
-                    
-                    # Emit overall status (for backward compatibility and light control)
-                    self.status_updated.emit(status)
+
+                    # Only emit overall status for groups the user is a member of (not monitoring groups)
+                    if group in self.user_groups:
+                        self.log_message.emit(f"[{get_timestamp()}] Updating overall status to '{status}' from user group '{group}'")
+                        self.status_updated.emit(status)
+                    else:
+                        self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status '{status}' - monitoring only, not affecting overall status")
                     
                     # Process ticket information if available
                     self.process_ticket_info(data, group)
@@ -2981,7 +2988,7 @@ class BusylightApp(QMainWindow):
             my_scroll_area.setWidget(my_scroll_widget)
             my_groups_layout.addWidget(my_scroll_area)
 
-            # Tab 2: All Groups Overview (compact view)
+            # Tab 2: All Groups (display-only compact view)
             all_groups_tab = QWidget()
             all_groups_layout = QVBoxLayout(all_groups_tab)
 
@@ -3049,7 +3056,7 @@ class BusylightApp(QMainWindow):
 
             # Add tabs to the tab widget
             tab_widget.addTab(my_groups_tab, "My Groups")
-            tab_widget.addTab(all_groups_tab, "All Groups Overview")
+            tab_widget.addTab(all_groups_tab, "All Groups")
 
             groups_main_layout.addWidget(tab_widget)
             groups_main.setLayout(groups_main_layout)
@@ -4387,9 +4394,13 @@ class BusylightApp(QMainWindow):
         return group_widget
 
     def create_compact_group_widget(self, group, colors):
-        """Create a compact group widget showing only the status indicator"""
+        """Create a display-only compact group widget showing status indicator"""
         compact_widget = QGroupBox(group)
         compact_widget.setFixedSize(120, 80)
+
+        # Disable interaction to make it clear this is display-only
+        compact_widget.setEnabled(True)  # Keep enabled for visual updates but no click handling
+        compact_widget.setCursor(Qt.ArrowCursor)  # Normal cursor, not pointer
 
         # Set smaller font for compact view
         compact_font = QFont()
@@ -4397,6 +4408,7 @@ class BusylightApp(QMainWindow):
         compact_font.setPointSize(9)
         compact_widget.setFont(compact_font)
 
+        # Style without hover effects to indicate display-only
         compact_widget.setStyleSheet(f"""
             QGroupBox {{
                 border: none;
@@ -4406,12 +4418,13 @@ class BusylightApp(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
                 border: 1px solid {colors['border_secondary']};
+                opacity: 0.9;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 8px;
                 padding: 0 4px 0 4px;
-                color: {colors['text_primary']};
+                color: {colors['text_muted']};
                 font-weight: 600;
                 font-size: 9px;
             }}
@@ -4446,6 +4459,15 @@ class BusylightApp(QMainWindow):
         status_indicator.setAlignment(Qt.AlignCenter)
         status_indicator.setFixedSize(50, 30)
         compact_layout.addWidget(status_indicator, alignment=Qt.AlignCenter)
+
+        # Explicitly disable mouse interaction to ensure display-only behavior
+        def ignore_mouse_events(event):
+            """Ignore all mouse events to prevent any interaction"""
+            event.ignore()
+
+        compact_widget.mousePressEvent = ignore_mouse_events
+        compact_widget.mouseReleaseEvent = ignore_mouse_events
+        compact_widget.mouseDoubleClickEvent = ignore_mouse_events
 
         # Store reference for status updates (but no event history)
         if not hasattr(self, 'all_group_widgets'):
