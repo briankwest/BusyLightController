@@ -7,6 +7,8 @@ import os
 import platform
 import argparse
 from datetime import datetime
+import time
+import hashlib
 import redis
 import asyncio
 import requests
@@ -2271,7 +2273,20 @@ class RedisWorker(QObject):
         super().__init__(parent)
         self.redis_client = None
         self.is_running = True
-        
+        self.pubsub = None
+
+        # Health check and reconnection settings
+        self.last_ping_time = 0
+        self.ping_interval = 30  # Ping every 30 seconds
+        self.reconnect_delay = 5  # Start with 5 seconds
+        self.max_reconnect_delay = 60  # Max 60 seconds between reconnects
+        self.connected = False
+
+        # Track processed events to prevent duplicates on reconnection
+        # Store hashes of recent events (keep last 100)
+        self.processed_events = set()
+        self.max_processed_events = 100
+
         # Use Redis info from login response
         if redis_info:
             self.redis_host = redis_info['host']  # Use host as-is from API
@@ -2288,16 +2303,69 @@ class RedisWorker(QObject):
             self.user_groups = ["default"]
             self.groups = ["default"]
             
+    def get_event_hash(self, data):
+        """Generate a hash for an event to detect duplicates"""
+        # Create a unique identifier from key fields
+        key_fields = {
+            'group': data.get('group', ''),
+            'status': data.get('status', ''),
+            'timestamp': data.get('timestamp', ''),
+            'ticket': data.get('ticket', ''),
+            'summary': data.get('summary', ''),
+        }
+        # Create a deterministic string from the fields
+        event_str = json.dumps(key_fields, sort_keys=True)
+        return hashlib.md5(event_str.encode()).hexdigest()
+
+    def is_event_processed(self, event_hash):
+        """Check if we've already processed this event"""
+        return event_hash in self.processed_events
+
+    def mark_event_processed(self, event_hash):
+        """Mark an event as processed and manage cache size"""
+        self.processed_events.add(event_hash)
+        # Keep only the most recent events to prevent unbounded growth
+        if len(self.processed_events) > self.max_processed_events:
+            # Remove oldest entries (convert to list, remove first half, convert back)
+            events_list = list(self.processed_events)
+            self.processed_events = set(events_list[-self.max_processed_events:])
+
+    def check_connection_health(self):
+        """Perform a health check on the Redis connection"""
+        try:
+            current_time = time.time()
+            # Only ping if enough time has passed since last ping
+            if current_time - self.last_ping_time >= self.ping_interval:
+                self.redis_client.ping()
+                self.last_ping_time = current_time
+                return True
+            return True
+        except Exception as e:
+            self.log_message.emit(f"[{get_timestamp()}] Health check failed: {e}")
+            return False
+
     def connect_to_redis(self):
         try:
+            # Close existing connection if present (for reconnection scenarios)
+            if self.redis_client:
+                try:
+                    self.redis_client.close()
+                except:
+                    pass
+            if self.pubsub:
+                try:
+                    self.pubsub.close()
+                except:
+                    pass
+
             # Log connection attempt details
             self.log_message.emit(f"[{get_timestamp()}] Attempting Redis connection to {self.redis_host}:{self.redis_port}")
             if self.redis_password:
                 self.log_message.emit(f"[{get_timestamp()}] Using password authentication (password length: {len(self.redis_password)})")
             else:
                 self.log_message.emit(f"[{get_timestamp()}] No password authentication")
-            
-            # Connect directly with provided credentials
+
+            # Connect directly with provided credentials and socket keepalive enabled
             self.redis_client = redis.StrictRedis(
                 host=self.redis_host,
                 port=self.redis_port,
@@ -2305,44 +2373,183 @@ class RedisWorker(QObject):
                 db=0,
                 decode_responses=True,
                 socket_timeout=10,
-                socket_connect_timeout=10
+                socket_connect_timeout=10,
+                socket_keepalive=True,
+                socket_keepalive_options={
+                    # TCP_KEEPIDLE: seconds before sending keepalive probes
+                    1: 60,
+                    # TCP_KEEPINTVL: interval between keepalive probes
+                    2: 10,
+                    # TCP_KEEPCNT: number of failed probes before closing
+                    3: 3
+                } if platform.system() != 'Darwin' else {},
+                health_check_interval=30  # Automatically ping every 30 seconds
             )
-            
+
             # Check if Redis connection is successful
             self.redis_client.ping()
             self.log_message.emit(f"[{get_timestamp()}] Connected to Redis at {self.redis_host}:{self.redis_port}")
             self.connection_status.emit("connected")
+            self.connected = True
+            self.last_ping_time = time.time()
+            # Reset reconnect delay on successful connection
+            self.reconnect_delay = 5
             return True
         except Exception as e:
             self.log_message.emit(f"[{get_timestamp()}] Redis connection error: {e}")
             self.log_message.emit(f"[{get_timestamp()}] Connection details - Host: {self.redis_host}, Port: {self.redis_port}, Password: {'Yes' if self.redis_password else 'No'}")
             self.connection_status.emit("disconnected")
+            self.connected = False
             return False
             
     def run(self):
-        if not self.connect_to_redis():
-            return
-            
-        # Get the most recent status from group-specific status keys
-        try:
-            latest_status = None
-            group_found_status = {}
-            
-            # Get the most recent status for each group from their individual status keys
-            for group in self.groups:
-                status_key = f"status:{group}"
+        # Main loop with automatic reconnection
+        while self.is_running:
+            # Try to connect or reconnect
+            if not self.connect_to_redis():
+                # Connection failed, wait before retrying
+                self.log_message.emit(f"[{get_timestamp()}] Will retry connection in {self.reconnect_delay} seconds...")
+                for _ in range(self.reconnect_delay * 10):  # Check every 100ms
+                    if not self.is_running:
+                        return
+                    QThread.msleep(100)
+
+                # Increase reconnect delay with exponential backoff
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+                continue
+
+            # Connection successful, proceed with getting initial status
+            try:
+                self.load_initial_status()
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error getting initial status: {e}")
+                self.connected = False
+                continue
+
+            # Subscribe to all group status channels
+            try:
+                self.pubsub = self.redis_client.pubsub()
+                for group in self.groups:
+                    channel_name = f"status:{group}"
+                    self.pubsub.subscribe(channel_name)
+                    self.log_message.emit(f"[{get_timestamp()}] Subscribed to {channel_name}")
+
+                self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} status channels...")
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error subscribing to channels: {e}")
+                self.connected = False
+                continue
+
+            # Listen for messages in a loop with health checks
+            consecutive_errors = 0
+            max_consecutive_errors = 3
+
+            while self.is_running and self.connected:
                 try:
-                    # Get the most recent status event for this group
-                    recent_event = self.redis_client.lindex(status_key, 0)  # Most recent is at index 0
-                    if recent_event:
+                    # Perform periodic health check
+                    if not self.check_connection_health():
+                        self.log_message.emit(f"[{get_timestamp()}] Connection health check failed, reconnecting...")
+                        self.connected = False
+                        self.connection_status.emit("disconnected")
+                        break
+
+                    # Get message from pubsub
+                    message = self.pubsub.get_message(timeout=0.1)
+                    if message and message["type"] == "message":
                         try:
-                            data = json.loads(recent_event)
-                            event_status = data.get('status')
-                            
-                            if event_status:
+                            data = json.loads(message["data"])
+                            channel = message["channel"]
+                            # Extract group name from channel (remove 'status:' prefix)
+                            group = channel.replace('status:', '') if channel.startswith('status:') else channel
+
+                            # Add group to data if not present
+                            if 'group' not in data:
+                                data['group'] = group
+
+                            # Check if this event has already been processed
+                            event_hash = self.get_event_hash(data)
+                            if self.is_event_processed(event_hash):
+                                self.log_message.emit(f"[{get_timestamp()}] Skipping duplicate event from {channel}")
+                            else:
+                                self.log_message.emit(f"[{get_timestamp()}] Received from {channel}: {data}")
+                                status = data.get('status', 'error')
+
+                                # Mark event as processed
+                                self.mark_event_processed(event_hash)
+
+                                # Emit group-specific status
+                                self.group_status_updated.emit(group, status, data)
+
+                                # Only emit overall status for groups the user is a member of (not monitoring groups)
+                                if group in self.user_groups:
+                                    self.log_message.emit(f"[{get_timestamp()}] Updating overall status to '{status}' from user group '{group}'")
+                                    self.status_updated.emit(status)
+                                else:
+                                    self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status '{status}' - monitoring only, not affecting overall status")
+
+                                # Process ticket information if available
+                                self.process_ticket_info(data, group)
+
+                            # Reset error counter on successful message processing
+                            consecutive_errors = 0
+
+                        except json.JSONDecodeError as e:
+                            self.log_message.emit(f"[{get_timestamp()}] Error decoding message: {e}")
+                        except Exception as e:
+                            self.log_message.emit(f"[{get_timestamp()}] Error processing message: {e}")
+                            consecutive_errors += 1
+
+                except redis.ConnectionError as e:
+                    self.log_message.emit(f"[{get_timestamp()}] Redis connection lost: {e}")
+                    self.connected = False
+                    self.connection_status.emit("disconnected")
+                    break
+                except Exception as e:
+                    self.log_message.emit(f"[{get_timestamp()}] Error in message loop: {e}")
+                    consecutive_errors += 1
+
+                # Check if we've had too many consecutive errors
+                if consecutive_errors >= max_consecutive_errors:
+                    self.log_message.emit(f"[{get_timestamp()}] Too many consecutive errors, reconnecting...")
+                    self.connected = False
+                    self.connection_status.emit("disconnected")
+                    break
+
+                # Small sleep to prevent CPU hogging
+                QThread.msleep(100)
+
+            # If we exited the loop but should still be running, we'll reconnect
+            if self.is_running and not self.connected:
+                self.log_message.emit(f"[{get_timestamp()}] Connection lost, will attempt to reconnect...")
+
+    def load_initial_status(self):
+        """Load the most recent status from group-specific status keys"""
+        latest_status = None
+        group_found_status = {}
+
+        # Get the most recent status for each group from their individual status keys
+        for group in self.groups:
+            status_key = f"status:{group}"
+            try:
+                # Get the most recent status event for this group
+                recent_event = self.redis_client.lindex(status_key, 0)  # Most recent is at index 0
+                if recent_event:
+                    try:
+                        data = json.loads(recent_event)
+                        event_status = data.get('status')
+
+                        # Add group to data if not present
+                        if 'group' not in data:
+                            data['group'] = group
+
+                        if event_status:
+                            # Check if we've already processed this event
+                            event_hash = self.get_event_hash(data)
+                            if not self.is_event_processed(event_hash):
                                 group_found_status[group] = {
                                     'status': event_status,
-                                    'data': data
+                                    'data': data,
+                                    'hash': event_hash
                                 }
                                 self.log_message.emit(f"[{get_timestamp()}] Found recent status for group '{group}': {event_status}")
 
@@ -2350,78 +2557,41 @@ class RedisWorker(QObject):
                                 if latest_status is None and group in self.user_groups:
                                     latest_status = event_status
                                     self.log_message.emit(f"[{get_timestamp()}] Setting initial overall status to '{latest_status}' from user group '{group}'")
-                                    
-                        except json.JSONDecodeError as e:
-                            self.log_message.emit(f"[{get_timestamp()}] Error parsing status data for group '{group}': {e}")
-                    else:
-                        self.log_message.emit(f"[{get_timestamp()}] No status events found for group '{group}'")
-                        
-                except Exception as e:
-                    self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
-            
-            # Emit status for each group (found status or default to normal)
-            for group in self.groups:
-                if group in group_found_status:
-                    # Found a recent event for this group
-                    status = group_found_status[group]['status']
-                    data = group_found_status[group]['data']
-                    self.group_status_updated.emit(group, status, data)
-                    self.process_ticket_info(data, group)
-                else:
-                    # No recent event found, default to normal
-                    self.log_message.emit(f"[{get_timestamp()}] No recent status found for group '{group}', defaulting to normal")
-                    default_data = {'group': group, 'status': 'normal'}
-                    self.group_status_updated.emit(group, 'normal', default_data)
-            
-            # Emit overall status
-            if latest_status:
-                self.status_updated.emit(latest_status)
-            else:
-                self.status_updated.emit('normal')
-                
-        except Exception as e:
-            self.log_message.emit(f"[{get_timestamp()}] Error getting initial status: {e}")
-        
-        # Subscribe to all group status channels
-        pubsub = self.redis_client.pubsub()
-        for group in self.groups:
-            channel_name = f"status:{group}"
-            pubsub.subscribe(channel_name)
-            self.log_message.emit(f"[{get_timestamp()}] Subscribed to {channel_name}")
-        
-        self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} status channels...")
-        
-        # Listen for messages in a loop
-        while self.is_running:
-            message = pubsub.get_message(timeout=0.1)
-            if message and message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    channel = message["channel"]
-                    # Extract group name from channel (remove 'status:' prefix)
-                    group = channel.replace('status:', '') if channel.startswith('status:') else channel
-                    
-                    self.log_message.emit(f"[{get_timestamp()}] Received from {channel}: {data}")
-                    status = data.get('status', 'error')
-                    
-                    # Emit group-specific status
-                    self.group_status_updated.emit(group, status, data)
+                            else:
+                                self.log_message.emit(f"[{get_timestamp()}] Skipping already processed event for group '{group}'")
 
-                    # Only emit overall status for groups the user is a member of (not monitoring groups)
-                    if group in self.user_groups:
-                        self.log_message.emit(f"[{get_timestamp()}] Updating overall status to '{status}' from user group '{group}'")
-                        self.status_updated.emit(status)
-                    else:
-                        self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status '{status}' - monitoring only, not affecting overall status")
-                    
-                    # Process ticket information if available
-                    self.process_ticket_info(data, group)
-                except Exception as e:
-                    self.log_message.emit(f"[{get_timestamp()}] Error processing message: {e}")
-                    self.status_updated.emit('error')
-            
-            # Small sleep to prevent CPU hogging
-            QThread.msleep(100)
+                    except json.JSONDecodeError as e:
+                        self.log_message.emit(f"[{get_timestamp()}] Error parsing status data for group '{group}': {e}")
+                else:
+                    self.log_message.emit(f"[{get_timestamp()}] No status events found for group '{group}'")
+
+            except Exception as e:
+                self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
+
+        # Emit status for each group (found status or default to normal)
+        for group in self.groups:
+            if group in group_found_status:
+                # Found a recent event for this group
+                status = group_found_status[group]['status']
+                data = group_found_status[group]['data']
+                event_hash = group_found_status[group]['hash']
+
+                # Mark as processed and emit
+                self.mark_event_processed(event_hash)
+                self.group_status_updated.emit(group, status, data)
+                self.process_ticket_info(data, group)
+            else:
+                # No recent event found, default to normal (don't emit if already processed)
+                self.log_message.emit(f"[{get_timestamp()}] No recent status found for group '{group}', defaulting to normal")
+                default_data = {'group': group, 'status': 'normal'}
+                # Don't mark default status as processed - it's not a real event
+                self.group_status_updated.emit(group, 'normal', default_data)
+
+        # Emit overall status
+        if latest_status:
+            self.status_updated.emit(latest_status)
+        else:
+            self.status_updated.emit('normal')
     
     def process_ticket_info(self, data, group):
         """Extract and process ticket information from a message"""
