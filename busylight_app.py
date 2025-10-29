@@ -2287,6 +2287,21 @@ class RedisWorker(QObject):
         self.processed_events = set()
         self.max_processed_events = 100
 
+        # Status priority mapping (highest to lowest priority)
+        self.status_priority = {
+            'alert': 4,
+            'error': 3,  # Treat error as high priority
+            'warning': 2,
+            'alert-acked': 1,
+            'normal': 0,
+            'default': 0,
+            'off': 0
+        }
+
+        # Track current status for each group in user_groups
+        self.group_statuses = {}
+        self.current_overall_status = 'normal'
+
         # Use Redis info from login response
         if redis_info:
             self.redis_host = redis_info['host']  # Use host as-is from API
@@ -2303,6 +2318,46 @@ class RedisWorker(QObject):
             self.user_groups = ["default"]
             self.groups = ["default"]
             
+    def get_highest_priority_status(self):
+        """Calculate the highest priority status across all user groups"""
+        if not self.group_statuses:
+            return 'normal'
+
+        # Find the status with the highest priority value
+        highest_priority = -1
+        highest_status = 'normal'
+
+        for group in self.user_groups:
+            if group in self.group_statuses:
+                status = self.group_statuses[group]
+                priority = self.status_priority.get(status, 0)
+                if priority > highest_priority:
+                    highest_priority = priority
+                    highest_status = status
+
+        return highest_status
+
+    def update_group_status(self, group, status):
+        """Update a group's status and emit overall status if priority changed"""
+        # Update the group's status
+        self.group_statuses[group] = status
+
+        # Only recalculate overall status for user's groups
+        if group in self.user_groups:
+            # Calculate the new highest priority status
+            new_overall_status = self.get_highest_priority_status()
+
+            # Only emit if the overall status changed
+            if new_overall_status != self.current_overall_status:
+                self.log_message.emit(f"[{get_timestamp()}] Overall status changed from '{self.current_overall_status}' to '{new_overall_status}' (triggered by group '{group}')")
+                self.current_overall_status = new_overall_status
+                self.status_updated.emit(new_overall_status)
+            else:
+                self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status updated to '{status}', but overall status remains '{self.current_overall_status}'")
+        else:
+            # Just log for monitoring groups
+            self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status '{status}' - monitoring only, not affecting overall status")
+
     def get_event_hash(self, data):
         """Generate a hash for an event to detect duplicates"""
         # Create a unique identifier from key fields
@@ -2480,12 +2535,8 @@ class RedisWorker(QObject):
                                 # Emit group-specific status
                                 self.group_status_updated.emit(group, status, data)
 
-                                # Only emit overall status for groups the user is a member of (not monitoring groups)
-                                if group in self.user_groups:
-                                    self.log_message.emit(f"[{get_timestamp()}] Updating overall status to '{status}' from user group '{group}'")
-                                    self.status_updated.emit(status)
-                                else:
-                                    self.log_message.emit(f"[{get_timestamp()}] Group '{group}' status '{status}' - monitoring only, not affecting overall status")
+                                # Update group status and recalculate overall status based on priority
+                                self.update_group_status(group, status)
 
                                 # Process ticket information if available
                                 self.process_ticket_info(data, group)
@@ -2524,7 +2575,6 @@ class RedisWorker(QObject):
 
     def load_initial_status(self):
         """Load the most recent status from group-specific status keys"""
-        latest_status = None
         group_found_status = {}
 
         # Get the most recent status for each group from their individual status keys
@@ -2552,11 +2602,6 @@ class RedisWorker(QObject):
                                     'hash': event_hash
                                 }
                                 self.log_message.emit(f"[{get_timestamp()}] Found recent status for group '{group}': {event_status}")
-
-                                # Use first status found as overall status (only for user's groups)
-                                if latest_status is None and group in self.user_groups:
-                                    latest_status = event_status
-                                    self.log_message.emit(f"[{get_timestamp()}] Setting initial overall status to '{latest_status}' from user group '{group}'")
                             else:
                                 self.log_message.emit(f"[{get_timestamp()}] Skipping already processed event for group '{group}'")
 
@@ -2568,7 +2613,7 @@ class RedisWorker(QObject):
             except Exception as e:
                 self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
 
-        # Emit status for each group (found status or default to normal)
+        # Process and emit status for each group
         for group in self.groups:
             if group in group_found_status:
                 # Found a recent event for this group
@@ -2580,18 +2625,23 @@ class RedisWorker(QObject):
                 self.mark_event_processed(event_hash)
                 self.group_status_updated.emit(group, status, data)
                 self.process_ticket_info(data, group)
+
+                # Update group status tracking
+                self.group_statuses[group] = status
             else:
-                # No recent event found, default to normal (don't emit if already processed)
+                # No recent event found, default to normal
                 self.log_message.emit(f"[{get_timestamp()}] No recent status found for group '{group}', defaulting to normal")
                 default_data = {'group': group, 'status': 'normal'}
-                # Don't mark default status as processed - it's not a real event
                 self.group_status_updated.emit(group, 'normal', default_data)
 
-        # Emit overall status
-        if latest_status:
-            self.status_updated.emit(latest_status)
-        else:
-            self.status_updated.emit('normal')
+                # Update group status tracking
+                self.group_statuses[group] = 'normal'
+
+        # Calculate and emit the highest priority status across all user groups
+        overall_status = self.get_highest_priority_status()
+        self.current_overall_status = overall_status
+        self.status_updated.emit(overall_status)
+        self.log_message.emit(f"[{get_timestamp()}] Initial overall status set to '{overall_status}' based on priority across all user groups")
     
     def process_ticket_info(self, data, group):
         """Extract and process ticket information from a message"""
