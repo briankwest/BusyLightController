@@ -23,6 +23,9 @@ from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
 import subprocess
 import webbrowser
 
+# Application version - increment this with each code change
+APP_VERSION = "1.0.3"
+
 # Busylight
 try:
     # Try the import that works with your device
@@ -1062,6 +1065,103 @@ class ConfigDialog(QDialog):
                 return False
                 
         return True
+
+# Help dialog class
+class HelpDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Help & About")
+        self.setModal(True)
+        self.resize(500, 300)
+
+        # Setup UI
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+
+        # Title label
+        title_label = QLabel("Busylight Controller")
+        title_label.setStyleSheet(f"""
+            font-size: 24px;
+            font-weight: bold;
+            color: {colors['accent_blue']};
+            margin-bottom: 10px;
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        # Version label
+        version_label = QLabel(f"Version {APP_VERSION}")
+        version_label.setStyleSheet(f"""
+            font-size: 16px;
+            color: {colors['text_secondary']};
+            margin-bottom: 20px;
+        """)
+        version_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(version_label)
+
+        # Separator line
+        separator = QLabel()
+        separator.setFixedHeight(2)
+        separator.setStyleSheet(f"background-color: {colors['border_secondary']};")
+        layout.addWidget(separator)
+
+        # Contact information
+        contact_label = QLabel("For assistance contact:")
+        contact_label.setStyleSheet(f"""
+            font-size: 14px;
+            font-weight: bold;
+            color: {colors['text_primary']};
+            margin-top: 10px;
+        """)
+        contact_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(contact_label)
+
+        # Contact details
+        contact_details = QLabel("Shane Harrell\n<shane.harrell@signalwire.com>")
+        contact_details.setStyleSheet(f"""
+            font-size: 14px;
+            color: {colors['accent_blue']};
+            margin-bottom: 20px;
+        """)
+        contact_details.setAlignment(Qt.AlignCenter)
+        layout.addWidget(contact_details)
+
+        # Add stretch to push button to bottom
+        layout.addStretch()
+
+        # Close button
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['accent_blue']};
+                color: {colors['bg_primary']};
+                border: none;
+                padding: 10px 30px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+            }}
+        """)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
 
 # Status change dialog class
 class StatusChangeDialog(QDialog):
@@ -3107,6 +3207,34 @@ class BusylightApp(QMainWindow):
         self.create_analytics_tab(colors)
         self.create_configuration_tab(colors)
 
+        # Add help button to tab bar corner with proper spacing
+        help_container = QWidget()
+        help_layout = QHBoxLayout(help_container)
+        help_layout.setContentsMargins(8, 2, 12, 2)  # left, top, right, bottom margins - reduced for vertical centering
+        help_layout.setSpacing(0)
+        help_layout.setAlignment(Qt.AlignVCenter)  # Vertically center the button
+
+        self.help_button = QPushButton("?")
+        self.help_button.setFixedSize(32, 32)
+        self.help_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['accent_blue']};
+                color: {colors['bg_primary']};
+                border: none;
+                border-radius: 16px;
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+            }}
+        """)
+        self.help_button.setToolTip("Help & About")
+        self.help_button.clicked.connect(self.show_help_dialog)
+
+        help_layout.addWidget(self.help_button)
+        self.main_tab_widget.setCornerWidget(help_container, Qt.TopRightCorner)
+
         layout.addWidget(self.main_tab_widget)
         main_widget.setLayout(layout)
         self.setCentralWidget(main_widget)
@@ -3769,6 +3897,11 @@ class BusylightApp(QMainWindow):
             if self.main_tab_widget.tabText(i) == "Configuration":
                 self.main_tab_widget.setCurrentIndex(i)
                 break
+
+    def show_help_dialog(self):
+        """Show the help and about dialog"""
+        help_dialog = HelpDialog(self)
+        help_dialog.exec()
 
     def apply_config_settings(self):
         """Apply settings from the configuration tab"""
