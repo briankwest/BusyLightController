@@ -2269,11 +2269,12 @@ class RedisWorker(QObject):
     ticket_received = pyqtSignal(dict)  # New signal for ticket information
     group_status_updated = pyqtSignal(str, str, dict)  # group, status, full_data
     
-    def __init__(self, redis_info, parent=None):
+    def __init__(self, redis_info, username=None, parent=None):
         super().__init__(parent)
         self.redis_client = None
         self.is_running = True
         self.pubsub = None
+        self.username = username
 
         # Health check and reconnection settings
         self.last_ping_time = 0
@@ -2489,7 +2490,14 @@ class RedisWorker(QObject):
                     self.pubsub.subscribe(channel_name)
                     self.log_message.emit(f"[{get_timestamp()}] Subscribed to {channel_name}")
 
-                self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {len(self.groups)} status channels...")
+                # Subscribe to username-specific channel if username is provided
+                if self.username:
+                    username_channel = f"status:{self.username}"
+                    self.pubsub.subscribe(username_channel)
+                    self.log_message.emit(f"[{get_timestamp()}] Subscribed to {username_channel}")
+
+                channel_count = len(self.groups) + (1 if self.username else 0)
+                self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {channel_count} status channels...")
             except Exception as e:
                 self.log_message.emit(f"[{get_timestamp()}] Error subscribing to channels: {e}")
                 self.connected = False
@@ -2645,17 +2653,17 @@ class RedisWorker(QObject):
     
     def process_ticket_info(self, data, group):
         """Extract and process ticket information from a message"""
-        # Check if this is a ticket message with required fields or has zoho_ticket_url
-        if ('ticket' in data and 'status' in data) or 'zoho_ticket_url' in data:
+        # Check if this is a ticket message with required fields or has busylight_pop_url
+        if ('ticket' in data and 'status' in data) or 'busylight_pop_url' in data:
             ticket_info = {
                 'ticket': data.get('ticket', ''),
                 'summary': data.get('summary', ''),
-                'zoho_ticket_url': data.get('zoho_ticket_url', ''),
+                'busylight_pop_url': data.get('busylight_pop_url', ''),
                 'group': group
             }
 
             # Emit the ticket info for the main app to handle
-            if ticket_info['ticket'] or ticket_info['zoho_ticket_url']:
+            if ticket_info['ticket'] or ticket_info['busylight_pop_url']:
                 ticket_id = ticket_info['ticket'] if ticket_info['ticket'] else 'URL-only'
                 self.log_message.emit(f"[{get_timestamp()}] Ticket information received: #{ticket_id}")
                 self.ticket_received.emit(ticket_info)
@@ -3802,7 +3810,7 @@ class BusylightApp(QMainWindow):
         
         # Create new worker with updated settings
         self.worker_thread = QThread()
-        self.redis_worker = RedisWorker(redis_info=self.redis_info)
+        self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
         self.redis_worker.moveToThread(self.worker_thread)
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
@@ -4107,7 +4115,7 @@ class BusylightApp(QMainWindow):
         # Log the ticket information
         ticket_id = ticket_info.get('ticket', 'Unknown')
         summary = ticket_info.get('summary', '')
-        zoho_ticket_url = ticket_info.get('zoho_ticket_url', '')
+        busylight_pop_url = ticket_info.get('busylight_pop_url', '')
         group = ticket_info.get('group', '')
 
         self.add_log(f"[{get_timestamp()}] Ticket #{ticket_id} received")
@@ -4117,11 +4125,11 @@ class BusylightApp(QMainWindow):
             # Handle text-to-speech if enabled
             self.speak_ticket_summary(summary)
 
-        if zoho_ticket_url:
-            self.add_log(f"[{get_timestamp()}] Zoho ticket URL: {zoho_ticket_url}")
+        if busylight_pop_url:
+            self.add_log(f"[{get_timestamp()}] URL to open: {busylight_pop_url}")
             # Handle URL opening if enabled and user belongs to the group
             if self.redis_info and group in self.redis_info.get('groups', []):
-                self.open_ticket_url(zoho_ticket_url)
+                self.open_ticket_url(busylight_pop_url)
             else:
                 self.add_log(f"[{get_timestamp()}] URL popup skipped - user not a member of group '{group}'")
     
@@ -4223,12 +4231,12 @@ class BusylightApp(QMainWindow):
         if not url_enabled:
             self.add_log(f"[{get_timestamp()}] URL opening is disabled in configuration")
             return
-            
-        # Basic URL validation
+
+        # Prepend https:// if protocol is missing
         if not url.startswith(('http://', 'https://')):
-            self.add_log(f"[{get_timestamp()}] Warning: Invalid URL format: {url}")
-            return
-            
+            url = f"https://{url}"
+            self.add_log(f"[{get_timestamp()}] Prepended https:// to URL: {url}")
+
         try:
             # Use the standard webbrowser module which is safer than shell commands
             if webbrowser.open(url):
@@ -4400,11 +4408,16 @@ class BusylightApp(QMainWindow):
     def parse_and_display_event(self, group, status, data, event_history_text):
         """Parse incoming event data and display it in the group's event history"""
         try:
+            # Skip displaying if this is a fake/default event (no source in data)
+            # This happens on startup when there's no event in the queue
+            if 'source' not in data:
+                return
+
             # Create a formatted event message
             timestamp = data.get('timestamp', get_timestamp())
             source = data.get('source', 'Unknown')
             reason = data.get('reason', '')
-            
+
             # Format the event message
             if reason:
                 event_message = f"{timestamp} - {status.upper()} by {source}\nReason: {reason}\n"
@@ -4745,7 +4758,7 @@ class BusylightApp(QMainWindow):
         if self.redis_info:
             # Create Redis worker thread with Redis info from login
             self.worker_thread = QThread()
-            self.redis_worker = RedisWorker(redis_info=self.redis_info)
+            self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
             self.redis_worker.moveToThread(self.worker_thread)
             self.redis_worker.status_updated.connect(self.light_controller.set_status)
             self.redis_worker.connection_status.connect(self.update_redis_connection_status)
@@ -4785,7 +4798,7 @@ class BusylightApp(QMainWindow):
         
         # Create new worker with updated settings
         self.worker_thread = QThread()
-        self.redis_worker = RedisWorker(redis_info=self.redis_info)
+        self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
         self.redis_worker.moveToThread(self.worker_thread)
         self.redis_worker.log_message.connect(self.add_log)
         self.redis_worker.status_updated.connect(self.light_controller.set_status)
