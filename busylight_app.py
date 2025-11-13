@@ -4005,6 +4005,11 @@ class BusylightApp(QMainWindow):
     
     def on_exit(self):
         """Safely shut down the application and clean up resources"""
+        # Prevent recursive calls
+        if hasattr(self, '_is_exiting') and self._is_exiting:
+            return
+        self._is_exiting = True
+
         try:
             # Log exit attempt
             print(f"[{get_timestamp()}] Application exit initiated")
