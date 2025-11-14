@@ -1,0 +1,122 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Busylight Controller is a cross-platform desktop application that controls USB Kuando Busylight devices for status indication. It provides system tray integration, Redis-based ticket system integration, text-to-speech announcements, and autostart capabilities.
+
+## Core Architecture
+
+- **Main Application**: `busylight_app.py` - PySide6-based GUI application with system tray integration
+- **Entry Point**: `busylight_app_main.py` - Application launcher
+- **CLI Version**: `busylight_cli.py` - Command-line interface for basic light control
+- **Development Runner**: `run_dev.py` - Launches the app directly for testing
+
+The application uses:
+- PySide6 for the GUI framework
+- Redis for ticket system integration
+- `busylight-for-humans` library for hardware control
+- PyInstaller for packaging
+
+## Development Commands
+
+### Running the Application
+```bash
+# Development mode
+python run_dev.py
+
+# Direct execution
+python busylight_app_main.py
+```
+
+### Installing Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Building Installers
+
+#### macOS (PKG installer)
+```bash
+python build_mac_pkg.py
+```
+
+#### Windows (MSI installer)
+```bash
+python build_windows_msi.py
+```
+
+#### Generic build script
+```bash
+python build.py
+```
+
+## Version Management
+
+### Application Version
+- **Version Constant**: `APP_VERSION` in `busylight_app.py` (line ~28)
+- **IMPORTANT**: Increment `APP_VERSION` with each code change to track software versions
+- Current format: Semantic versioning (e.g., "1.0.3")
+- Version is displayed in the Help & About dialog (accessible via "?" button in tab bar)
+
+### User-Agent for API Requests
+- **User-Agent Constant**: `USER_AGENT` in `busylight_app.py` (line ~31)
+- Format: `BusylightController/{APP_VERSION}`
+- All API requests include this User-Agent header for tracking and debugging
+- Locations using User-Agent:
+  - `authenticate()` method - login authentication
+  - `test_connection()` method - connection testing
+  - `submit_to_api()` method - status updates
+  - `get_redis_password()` in `busylight_cli.py` - CLI Redis auth
+
+## Application Structure
+
+### Device Integration
+- Supports Kuando Busylight devices (primarily Busylight Omega)
+- Falls back to generic Light class if Omega driver unavailable
+- Hardware control through `busylight-for-humans` library
+
+### UI Features
+- **Tabbed Interface**: Status Monitor, Analytics, and Configuration tabs
+- **Help Dialog**: Accessible via "?" button in top-right corner of tab bar
+  - Displays application version
+  - Shows contact information for support
+  - Defined in `HelpDialog` class
+- **Group Status Monitoring**: Visual status indicators for multiple support groups
+- **Event History**: Displays recent status events (skips fake/default events without source)
+
+### Configuration Storage
+- **macOS**: `~/Library/Preferences/Busylight/BusylightController.plist`
+- **Windows**: Registry under `HKEY_CURRENT_USER\Software\Busylight\BusylightController`
+
+### Redis Integration
+- Connects to Redis server for ticket notifications
+- Default host: `busylight.signalwire.me:6379`
+- Uses bearer token authentication via API calls
+- Supports TTS announcements and URL opening for tickets
+- **URL Pop Feature**: Events containing `busylight_pop_url` will automatically open the URL in the default browser (if enabled in configuration)
+  - URLs without protocol automatically prepend `https://`
+  - Only opens for users who are members of the event's group
+
+### Security Features
+- HTTPS for API communication
+- Host validation to prevent SSRF attacks
+- Input validation for external data
+- Safe command execution (no shell injection)
+
+## Key Files
+
+- `busylight_macos.spec` - PyInstaller spec for macOS builds
+- `busylight_win_build.spec` - PyInstaller spec for Windows builds
+- `BusylightController.spec` - Generic PyInstaller spec
+- `requirements.txt` - Python dependencies
+- Icon files: `icon.png`, `icon.ico`, `icon.icns`
+
+## Build Dependencies
+
+- Python 3.7+
+- PyInstaller
+- For macOS: Xcode Command Line Tools
+- For Windows: WiX Toolset (must be in PATH)
+- Pillow or ImageMagick for icon conversion

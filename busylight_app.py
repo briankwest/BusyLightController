@@ -27,6 +27,9 @@ import webbrowser
 # Application version - increment this with each code change
 APP_VERSION = "1.0.3"
 
+# User-Agent for API requests
+USER_AGENT = f"BusylightController/{APP_VERSION}"
+
 # Busylight
 try:
     # Try the import that works with your device
@@ -311,6 +314,7 @@ class LoginDialog(QDialog):
     def authenticate(self, username, password):
         headers = {
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT
         }
 
         url = f"https://busylight.signalwire.me/api/status/redis-info"
@@ -1002,7 +1006,8 @@ class ConfigDialog(QDialog):
             # Try to get Redis password using token with HTTPS
             headers = {
                 'Content-Type': 'application/json',
-                'Authorization': f'Bearer {token}'
+                'Authorization': f'Bearer {token}',
+                'User-Agent': USER_AGENT
             }
             
             url = f'https://{host}/api/status/redis-info'
@@ -1388,9 +1393,10 @@ class StatusChangeDialog(QDialog):
             }
             
             headers = {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': USER_AGENT
             }
-            
+
             # Make API call with authentication
             response = requests.post(
                 api_url,
