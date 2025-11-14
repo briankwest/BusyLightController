@@ -12,6 +12,9 @@ import os
 
 dotenv.load_dotenv()
 
+# Import version for User-Agent
+from busylight_app import APP_VERSION
+
 # Busylight
 from busylight.lights import Busylight_Omega
 from busylight.lights.kuando._busylight import Ring, Instruction, CommandBuffer
@@ -29,7 +32,8 @@ light = Busylight_Omega.first_light()
 def get_redis_password():
     headers = {
         'Content-Type': 'application/json',
-        'Authorization': f'Bearer {redis_bearer_token}'
+        'Authorization': f'Bearer {redis_bearer_token}',
+        'User-Agent': f'BusylightController/{APP_VERSION}'
     }
     r = requests.get(f'http://{redis_host}/api/status/redis-info', headers=headers)
     try:
