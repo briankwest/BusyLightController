@@ -6,6 +6,7 @@ import sys
 import os
 import platform
 import argparse
+import socket
 from datetime import datetime
 import time
 import hashlib
@@ -2522,6 +2523,15 @@ class RedisWorker(QObject):
                 self.log_message.emit(f"[{get_timestamp()}] No password authentication")
 
             # Connect directly with provided credentials and socket keepalive enabled
+            keepalive_options = {}
+            # Use proper socket constants - hasattr checks handle platform differences
+            if hasattr(socket, 'TCP_KEEPIDLE'):
+                keepalive_options[socket.TCP_KEEPIDLE] = 60   # seconds before sending keepalive probes
+            if hasattr(socket, 'TCP_KEEPINTVL'):
+                keepalive_options[socket.TCP_KEEPINTVL] = 10  # interval between keepalive probes
+            if hasattr(socket, 'TCP_KEEPCNT'):
+                keepalive_options[socket.TCP_KEEPCNT] = 3     # number of failed probes before closing
+
             self.redis_client = redis.StrictRedis(
                 host=self.redis_host,
                 port=self.redis_port,
@@ -2531,14 +2541,7 @@ class RedisWorker(QObject):
                 socket_timeout=10,
                 socket_connect_timeout=10,
                 socket_keepalive=True,
-                socket_keepalive_options={
-                    # TCP_KEEPIDLE: seconds before sending keepalive probes
-                    1: 60,
-                    # TCP_KEEPINTVL: interval between keepalive probes
-                    2: 10,
-                    # TCP_KEEPCNT: number of failed probes before closing
-                    3: 3
-                } if platform.system() != 'Darwin' else {},
+                socket_keepalive_options=keepalive_options,
                 health_check_interval=30  # Automatically ping every 30 seconds
             )
 
@@ -4005,6 +4008,11 @@ class BusylightApp(QMainWindow):
     
     def on_exit(self):
         """Safely shut down the application and clean up resources"""
+        # Prevent recursive calls
+        if hasattr(self, '_is_exiting') and self._is_exiting:
+            return
+        self._is_exiting = True
+
         try:
             # Log exit attempt
             print(f"[{get_timestamp()}] Application exit initiated")
