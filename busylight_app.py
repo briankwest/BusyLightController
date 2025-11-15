@@ -35,6 +35,10 @@ USER_AGENT = f"BusylightController/{APP_VERSION}"
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
 
+# UI Text Constants
+APPLY_SETTINGS_BUTTON_TEXT = "Apply Settings"
+APPLY_SETTINGS_BUTTON_TEXT_UPDATING = "Applying Settings..."
+
 # Busylight
 try:
     # Try the import that works with your device
@@ -4108,9 +4112,9 @@ class BusylightApp(QMainWindow):
         config_layout.addWidget(scroll_area)
 
         # Add apply button at the bottom
-        apply_button = QPushButton("Apply Settings")
-        apply_button.clicked.connect(lambda: self.apply_config_settings())
-        apply_button.setStyleSheet(f"""
+        self.apply_button = QPushButton(APPLY_SETTINGS_BUTTON_TEXT)
+        self.apply_button.clicked.connect(lambda: self.apply_config_settings())
+        self.apply_button.setStyleSheet(f"""
             QPushButton {{
                 background: {colors['accent_blue']};
                 color: white;
@@ -4125,8 +4129,12 @@ class BusylightApp(QMainWindow):
                 background: {colors['hover_bg']};
                 color: {colors['text_primary']};
             }}
+            QPushButton:disabled {{
+                background: {colors['hover_bg']};
+                color: {colors['text_secondary']};
+            }}
         """)
-        config_layout.addWidget(apply_button)
+        config_layout.addWidget(self.apply_button)
 
         self.main_tab_widget.addTab(config_tab, "Configuration")
 
@@ -4515,6 +4523,12 @@ class BusylightApp(QMainWindow):
 
     def apply_config_settings(self):
         """Apply settings from the configuration tab"""
+        # Disable button and update text to show updating state
+        # Button will be re-enabled in complete_initialization()
+        if hasattr(self, 'apply_button'):
+            self.apply_button.setEnabled(False)
+            self.apply_button.setText(APPLY_SETTINGS_BUTTON_TEXT_UPDATING)
+
         # Save settings from the configuration widgets
         settings = QSettings("Busylight", "BusylightController")
 
@@ -4543,13 +4557,25 @@ class BusylightApp(QMainWindow):
         """Restart the Redis worker with current settings"""
         # Set initialization flag to prevent TTS during restart
         self.is_initializing = True
-        
+
         # Stop existing worker if it exists
         if hasattr(self, 'redis_worker') and self.redis_worker:
             self.redis_worker.stop()
+
         if hasattr(self, 'worker_thread') and self.worker_thread:
             self.worker_thread.quit()
-            self.worker_thread.wait(1000)  # Wait up to 1 second
+            if not self.worker_thread.wait(3000):
+                self.worker_thread.terminate()
+                self.worker_thread.wait()
+
+            # Properly delete the old thread
+            self.worker_thread.deleteLater()
+            self.worker_thread = None
+
+        # Delete old worker
+        if hasattr(self, 'redis_worker') and self.redis_worker:
+            self.redis_worker.deleteLater()
+            self.redis_worker = None
 
         # Create and start new worker with updated settings
         self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
@@ -5732,6 +5758,11 @@ class BusylightApp(QMainWindow):
         """Complete initialization tasks after the UI is ready"""
         self.is_initializing = False
         self.add_log(f"[{get_timestamp()}] Initialization complete - TTS now active for new events")
+
+        # Re-enable apply button and restore text after worker restart is complete
+        if hasattr(self, 'apply_button'):
+            self.apply_button.setText(APPLY_SETTINGS_BUTTON_TEXT)
+            self.apply_button.setEnabled(True)
 
     def show_analytics_dashboard(self):
         """Switch to the analytics tab"""
