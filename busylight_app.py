@@ -4940,6 +4940,9 @@ def main():
     
     # Set app icon    
     app.setWindowIcon(app_icon)
+
+    # Set app_id/wm_class on Linux, no-op on Mac/Windows
+    app.setDesktopFileName("com.busylight.controller")
     
     # Platform-specific customizations
     system = platform.system()
