@@ -3949,22 +3949,11 @@ class BusylightApp(QMainWindow):
         if hasattr(self, 'worker_thread') and self.worker_thread:
             self.worker_thread.quit()
             self.worker_thread.wait(1000)  # Wait up to 1 second
-        
-        # Create new worker with updated settings
-        self.worker_thread = QThread()
-        self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
-        self.redis_worker.moveToThread(self.worker_thread)
-        self.redis_worker.log_message.connect(self.add_log)
-        self.redis_worker.status_updated.connect(self.light_controller.set_status)
-        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
-        self.redis_worker.ticket_received.connect(self.process_ticket_info)
-        self.redis_worker.group_status_updated.connect(self.update_group_status)
-        self.worker_thread.started.connect(self.redis_worker.run)
-        
-        # Start the new worker
+
+        # Create and start new worker with updated settings
         self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
-        self.worker_thread.start()
-        
+        self.start_redis_worker()
+
         # Complete initialization after a delay to allow historical events to load
         QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
     
@@ -4931,36 +4920,6 @@ class BusylightApp(QMainWindow):
                 self.main_tab_widget.setCurrentIndex(i)
                 break
     
-    def restart_worker(self):
-        """Restart the Redis worker with current settings"""
-        # Set initialization flag to prevent TTS during restart
-        self.is_initializing = True
-        
-        # Stop existing worker if it exists
-        if hasattr(self, 'redis_worker') and self.redis_worker:
-            self.redis_worker.stop()
-        if hasattr(self, 'worker_thread') and self.worker_thread:
-            self.worker_thread.quit()
-            self.worker_thread.wait(1000)  # Wait up to 1 second
-        
-        # Create new worker with updated settings
-        self.worker_thread = QThread()
-        self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
-        self.redis_worker.moveToThread(self.worker_thread)
-        self.redis_worker.log_message.connect(self.add_log)
-        self.redis_worker.status_updated.connect(self.light_controller.set_status)
-        self.redis_worker.connection_status.connect(self.update_redis_connection_status)
-        self.redis_worker.ticket_received.connect(self.process_ticket_info)
-        self.redis_worker.group_status_updated.connect(self.update_group_status)
-        self.worker_thread.started.connect(self.redis_worker.run)
-        
-        # Start the new worker
-        self.add_log(f"[{get_timestamp()}] Restarting Redis connection with new settings")
-        self.worker_thread.start()
-        
-        # Complete initialization after a delay to allow historical events to load
-        QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
-
 # Main application
 def main():
     app = QApplication(sys.argv)
@@ -4981,6 +4940,9 @@ def main():
     
     # Set app icon    
     app.setWindowIcon(app_icon)
+
+    # Set app_id/wm_class on Linux, no-op on Mac/Windows
+    app.setDesktopFileName("com.busylight.controller")
     
     # Platform-specific customizations
     system = platform.system()
