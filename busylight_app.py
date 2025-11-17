@@ -18,14 +18,15 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QLabel, QPushButton, QComboBox, QSystemTrayIcon,
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
-                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout)
-from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint
+                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout,
+                            QSplitter, QListWidget, QListWidgetItem)
+from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
 import subprocess
 import webbrowser
 
 # Application version - increment this with each code change
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.0"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -362,15 +363,6 @@ class LoginDialog(QDialog):
         except Exception as e:
             print(f"[{get_timestamp()}] Error saving credentials: {e}")
     
-    def clear_saved_credentials(self):
-        """Clear saved credentials from settings"""
-        try:
-            self.settings.remove("credentials/username")
-            self.settings.sync()
-            print(f"[{get_timestamp()}] Saved credentials cleared")
-        except Exception as e:
-            print(f"[{get_timestamp()}] Error clearing credentials: {e}")
-
 # Configuration dialog class
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
@@ -670,7 +662,7 @@ class ConfigDialog(QDialog):
         general_layout.addRow("Start Minimized:", self.start_minimized_checkbox)
         general_layout.addRow("Run at System Startup:", self.autostart_checkbox)
         general_layout.addRow("Simulation Mode (when no light available):", self.simulation_mode_checkbox)
-        
+
         # Test connection button
         test_button = QPushButton("Test Connection")
         test_button.clicked.connect(self.test_connection)
@@ -816,7 +808,7 @@ class ConfigDialog(QDialog):
         self.settings.setValue("app/start_minimized", self.start_minimized_checkbox.isChecked())
         self.settings.setValue("app/autostart", self.autostart_checkbox.isChecked())
         self.settings.setValue("app/simulation_mode", self.simulation_mode_checkbox.isChecked())
-        
+
         # Make sure settings are flushed to disk
         self.settings.sync()
         
@@ -1444,6 +1436,247 @@ class StatusChangeDialog(QDialog):
         return self.result_data
 
 # Custom status update dialog class
+class GroupStatusUpdateDialog(QDialog):
+    """Simple dialog for updating a specific group's status"""
+    def __init__(self, group_name, parent=None):
+        super().__init__(parent)
+        self.group_name = group_name
+        self.setWindowTitle(f"Update Status - {group_name}")
+        self.setModal(True)
+        self.resize(500, 350)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Get parent app reference
+        parent_app = self.parent()
+        colors = get_adaptive_colors()
+
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+
+        # Title
+        title_label = QLabel(f"Update Status for {self.group_name}")
+        title_label.setStyleSheet(f"""
+            font-size: 16px;
+            font-weight: bold;
+            color: {colors['accent_blue']};
+            margin-bottom: 10px;
+        """)
+        layout.addWidget(title_label)
+
+        # Form container
+        form_group = QGroupBox()
+        form_group.setStyleSheet(f"""
+            QGroupBox {{
+                border: 2px solid {colors['border_secondary']};
+                border-radius: 8px;
+                padding: 16px;
+                background: {colors['bg_secondary']};
+            }}
+        """)
+        form_layout = QVBoxLayout(form_group)
+        form_layout.setSpacing(12)
+
+        # Group field (read-only, pre-filled)
+        group_label = QLabel("Group:")
+        group_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        form_layout.addWidget(group_label)
+
+        self.group_input = QLineEdit()
+        self.group_input.setText(self.group_name)
+        self.group_input.setReadOnly(True)
+        self.group_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_secondary']};
+                color: {colors['text_secondary']};
+                min-height: 30px;
+            }}
+        """)
+        form_layout.addWidget(self.group_input)
+
+        # Source field (read-only, pre-filled with current user)
+        source_label = QLabel("Source:")
+        source_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        form_layout.addWidget(source_label)
+
+        self.source_input = QLineEdit()
+        if parent_app and hasattr(parent_app, 'username'):
+            self.source_input.setText(parent_app.username)
+        else:
+            self.source_input.setText("Unknown User")
+        self.source_input.setReadOnly(True)
+        self.source_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_secondary']};
+                color: {colors['text_secondary']};
+                min-height: 30px;
+            }}
+        """)
+        form_layout.addWidget(self.source_input)
+
+        # Status dropdown
+        status_label = QLabel("Status: *")
+        status_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        form_layout.addWidget(status_label)
+
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(['normal', 'warning', 'alert', 'alert-acked', 'error'])
+        self.status_combo.setCurrentText('normal')
+        self.status_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-height: 30px;
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                selection-background-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.status_combo)
+
+        # Reason field
+        reason_label = QLabel("Reason:")
+        reason_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        form_layout.addWidget(reason_label)
+
+        self.reason_input = QLineEdit()
+        self.reason_input.setPlaceholderText("Optional: Reason for status update")
+        self.reason_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-height: 30px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.reason_input)
+
+        layout.addWidget(form_group)
+        layout.addStretch()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['bg_secondary']};
+                color: {colors['text_primary']};
+                border: 1px solid {colors['border_secondary']};
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+            }}
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        submit_btn = QPushButton("Update Status")
+        submit_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        submit_btn.clicked.connect(self.submit_status)
+        button_layout.addWidget(submit_btn)
+
+        layout.addLayout(button_layout)
+
+    def submit_status(self):
+        """Submit the status update to the API"""
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "API Error", "No authentication credentials available.")
+            return
+
+        status = self.status_combo.currentText()
+        reason = self.reason_input.text().strip()
+        source = self.source_input.text()
+
+        # Prepare API request
+        api_url = "https://busylight.signalwire.me/api/status"
+
+        payload = {
+            'status': status,
+            'source': source,
+            'group': self.group_name,
+            'timestamp': get_timestamp()
+        }
+
+        # Add optional reason if provided
+        if reason:
+            payload['reason'] = reason
+
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': USER_AGENT
+        }
+
+        try:
+            # Make API call with authentication
+            response = requests.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                auth=(parent_app.username, parent_app.password),
+                timeout=10
+            )
+
+            # Check response
+            if response.status_code == 200:
+                QMessageBox.information(self, "Success", f"Status updated successfully for group '{self.group_name}'")
+                if hasattr(parent_app, 'add_log'):
+                    parent_app.add_log(f"[{get_timestamp()}] Status update: {status} for {self.group_name} by {source}")
+                self.accept()  # Close dialog
+            else:
+                QMessageBox.warning(self, "API Error", f"Failed to update status: {response.status_code}\n{response.text}")
+
+        except requests.exceptions.RequestException as e:
+            QMessageBox.critical(self, "Network Error", f"Failed to connect to API:\n{str(e)}")
+
 class CustomStatusDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1474,7 +1707,7 @@ class CustomStatusDialog(QDialog):
         """)
 
         # Title label
-        title_label = QLabel("Set Status on Any Queue/Group")
+        title_label = QLabel("Set Status for any Group")
         title_label.setStyleSheet(f"""
             font-size: 16px;
             font-weight: bold;
@@ -1482,13 +1715,7 @@ class CustomStatusDialog(QDialog):
             margin-bottom: 10px;
         """)
         layout.addWidget(title_label)
-
-        # Description label
-        desc_label = QLabel("Update status for any group or user queue (not limited to your groups)")
-        desc_label.setStyleSheet(f"color: {colors['text_secondary']}; margin-bottom: 10px;")
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
-
+        
         # Form container
         form_group = QGroupBox()
         form_group.setStyleSheet(f"""
@@ -3670,109 +3897,33 @@ class BusylightApp(QMainWindow):
                 }}
             """)
 
-            # Tab 1: My Groups (full functionality)
+            # Tab 1: My Groups (split panel view)
             my_groups_tab = QWidget()
             my_groups_layout = QVBoxLayout(my_groups_tab)
 
-            # Create a scrollable area for my groups
-            my_scroll_area = QScrollArea()
-            my_scroll_area.setWidgetResizable(True)
-            my_scroll_area.setStyleSheet(f"""
-                QScrollArea {{
-                    border: none;
-                    background: transparent;
-                }}
-                QScrollBar:vertical {{
-                    background: {colors['bg_secondary']};
-                    width: 12px;
-                    border-radius: 6px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: {colors['text_muted']};
-                    border-radius: 6px;
-                    min-height: 20px;
-                }}
-                QScrollBar::handle:vertical:hover {{
-                    background: {colors['accent_blue']};
-                }}
-            """)
-            my_scroll_widget = QWidget()
-            my_scroll_widget.setStyleSheet(f"background: transparent;")
-            my_scroll_layout = QVBoxLayout(my_scroll_widget)
+            # Create split panel for my groups
+            if self.redis_info and 'groups' in self.redis_info:
+                self.my_groups_splitter = self.create_split_panel_layout(self.redis_info['groups'], colors, "my_groups")
+                my_groups_layout.addWidget(self.my_groups_splitter)
 
-            # Create status widget for each group the user belongs to
-            for group in self.redis_info['groups']:
-                group_widget = self.create_full_group_widget(group, colors)
-                my_scroll_layout.addWidget(group_widget)
-
-            my_scroll_area.setWidget(my_scroll_widget)
-            my_groups_layout.addWidget(my_scroll_area)
-
-            # Tab 2: All Groups (display-only compact view)
+            # Tab 2: All Groups (split panel view - display only)
             all_groups_tab = QWidget()
             all_groups_layout = QVBoxLayout(all_groups_tab)
 
-            # Create a scrollable area for all groups
-            all_scroll_area = QScrollArea()
-            all_scroll_area.setWidgetResizable(True)
-            all_scroll_area.setStyleSheet(f"""
-                QScrollArea {{
-                    border: none;
-                    background: transparent;
-                }}
-                QScrollBar:vertical {{
-                    background: {colors['bg_secondary']};
-                    width: 12px;
-                    border-radius: 6px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: {colors['text_muted']};
-                    border-radius: 6px;
-                    min-height: 20px;
-                }}
-                QScrollBar::handle:vertical:hover {{
-                    background: {colors['accent_blue']};
-                }}
-            """)
-            all_scroll_widget = QWidget()
-            all_scroll_widget.setStyleSheet(f"background: transparent;")
-            all_scroll_layout = QVBoxLayout(all_scroll_widget)
-
-            # Create compact widgets for all groups (excluding user's groups)
+            # Create split panel for all groups (excluding user's groups)
             if 'all_groups' in self.redis_info:
                 user_groups = set(self.redis_info['groups'])
                 other_groups = [g for g in self.redis_info['all_groups'] if g not in user_groups]
 
                 if other_groups:
-                    # Create a grid layout for compact view
-                    grid_layout = QGridLayout()
-                    grid_layout.setSpacing(8)
-
-                    row, col = 0, 0
-                    max_cols = 4  # 4 compact widgets per row
-
-                    for group in other_groups:
-                        compact_widget = self.create_compact_group_widget(group, colors)
-                        grid_layout.addWidget(compact_widget, row, col)
-
-                        col += 1
-                        if col >= max_cols:
-                            col = 0
-                            row += 1
-
-                    # Create container widget for grid
-                    grid_container = QWidget()
-                    grid_container.setLayout(grid_layout)
-                    all_scroll_layout.addWidget(grid_container)
+                    self.all_groups_splitter = self.create_split_panel_layout(other_groups, colors, "all_groups", display_only=True)
+                    all_groups_layout.addWidget(self.all_groups_splitter)
                 else:
                     # No other groups message
                     no_groups_label = QLabel("No other groups available")
                     no_groups_label.setAlignment(Qt.AlignCenter)
                     no_groups_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; padding: 20px;")
-                    all_scroll_layout.addWidget(no_groups_label)
-
-            all_scroll_area.setWidget(all_scroll_widget)
-            all_groups_layout.addWidget(all_scroll_area)
+                    all_groups_layout.addWidget(no_groups_label)
 
             # Add tabs to the tab widget
             tab_widget.addTab(my_groups_tab, "My Groups")
@@ -3784,7 +3935,7 @@ class BusylightApp(QMainWindow):
             button_layout.setContentsMargins(0, 0, 0, 10)
             button_layout.addStretch()
 
-            custom_status_btn = QPushButton("Custom Status Update...")
+            custom_status_btn = QPushButton("Status Update...")
             custom_status_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {colors['accent_blue']};
@@ -3807,6 +3958,11 @@ class BusylightApp(QMainWindow):
             groups_main_layout.addWidget(button_container)
             groups_main_layout.addWidget(tab_widget)
             groups_main.setLayout(groups_main_layout)
+
+            # Store references
+            self.groups_tab_widget = tab_widget
+            self.groups_main_layout = groups_main_layout
+            self.groups_main = groups_main
             layout.addWidget(groups_main)
         else:
             # Fallback single status display if no groups
@@ -4168,66 +4324,19 @@ class BusylightApp(QMainWindow):
         
         # Create context menu for the tray
         tray_menu = QMenu()
-        
-        # Add Light Control submenu
-        light_control_menu = QMenu("Light Control", tray_menu)
-        
-        # Add status submenu
-        status_menu = QMenu("Set Status", light_control_menu)
-        for status, name in self.light_controller.COLOR_NAMES.items():
-            action = status_menu.addAction(name)
-            action.setData(status)
-            action.triggered.connect(self.on_tray_status_changed)
-        light_control_menu.addMenu(status_menu)
-        
-        # Add effects submenu
-        effects_menu = QMenu("Set Effect", light_control_menu)
-        for effect, name in self.light_controller.EFFECTS.items():
-            action = effects_menu.addAction(name)
-            action.setData(effect)
-            action.triggered.connect(self.on_tray_effect_changed)
-        light_control_menu.addMenu(effects_menu)
-        
-        # Add ringtones submenu
-        ringtones_menu = QMenu("Set Ringtone", light_control_menu)
-        # Add Off option first
-        off_action = ringtones_menu.addAction("Off")
-        off_action.setData(("off", 0))
-        off_action.triggered.connect(self.on_tray_ringtone_changed)
-        
-        # Add separator
-        ringtones_menu.addSeparator()
-        
-        # Add other ringtones with volume levels
-        for ringtone in self.light_controller.RINGTONES.keys():
-            if ringtone != "off":
-                ringtone_submenu = QMenu(ringtone.capitalize(), ringtones_menu)
-                for volume in range(1, 11):  # Volume 1-10
-                    volume_action = ringtone_submenu.addAction(f"Volume {volume}")
-                    volume_action.setData((ringtone, volume))
-                    volume_action.triggered.connect(self.on_tray_ringtone_changed)
-                ringtones_menu.addMenu(ringtone_submenu)
-        light_control_menu.addMenu(ringtones_menu)
-        
-        # Add separator in light control menu
-        light_control_menu.addSeparator()
-        
-        # Add direct control actions
-        turn_off_action = light_control_menu.addAction("Turn Off")
-        turn_off_action.triggered.connect(self.light_controller.turn_off)
-        
-        refresh_connection_action = light_control_menu.addAction("Refresh Connection")
-        refresh_connection_action.triggered.connect(self.manually_connect_device)
-        
-        refresh_status_action = light_control_menu.addAction("Refresh From Redis")
-        refresh_status_action.triggered.connect(self.refresh_status_from_redis)
-        
-        # Add the Light Control menu to main tray menu
-        tray_menu.addMenu(light_control_menu)
 
         # Add Custom Status Update action
         custom_status_action = tray_menu.addAction("Custom Status Update...")
         custom_status_action.triggered.connect(self.show_custom_status_dialog)
+
+        tray_menu.addSeparator()
+
+        # Add refresh actions
+        refresh_connection_action = tray_menu.addAction("Refresh Connection")
+        refresh_connection_action.triggered.connect(self.manually_connect_device)
+
+        refresh_status_action = tray_menu.addAction("Refresh From Redis")
+        refresh_status_action.triggered.connect(self.refresh_status_from_redis)
 
         tray_menu.addSeparator()
 
@@ -4348,34 +4457,6 @@ class BusylightApp(QMainWindow):
 
         # Complete initialization after a delay to allow historical events to load
         QTimer.singleShot(3000, self.complete_initialization)  # 3 second delay
-    
-    def on_tray_status_changed(self):
-        action = self.sender()
-        if action:
-            status = action.data()
-            # Use the current effect and ringtone settings when changing from tray
-            self.light_controller.set_status(status)
-    
-    def on_tray_effect_changed(self):
-        """Handle effect change from tray menu"""
-        action = self.sender()
-        if action:
-            effect = action.data()
-            self.light_controller.set_effect(effect)
-            self.add_log(f"[{get_timestamp()}] Effect changed from tray: {self.light_controller.EFFECTS.get(effect, 'Unknown')}")
-    
-    def on_tray_ringtone_changed(self):
-        """Handle ringtone change from tray menu"""
-        action = self.sender()
-        if action:
-            ringtone_data = action.data()
-            if isinstance(ringtone_data, tuple):
-                ringtone, volume = ringtone_data
-                self.light_controller.set_ringtone(ringtone, volume)
-                if ringtone == "off":
-                    self.add_log(f"[{get_timestamp()}] Ringtone turned off from tray")
-                else:
-                    self.add_log(f"[{get_timestamp()}] Ringtone changed from tray: {ringtone} volume {volume}")
     
     def update_status_display(self, status):
         # Update the tray icon
@@ -4596,6 +4677,55 @@ class BusylightApp(QMainWindow):
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error retrieving status from Redis: {e}")
 
+    def load_existing_redis_events(self):
+        """Load all existing events from Redis at startup"""
+        try:
+            # Check if Redis worker exists and is connected
+            if not hasattr(self, 'redis_worker') or not hasattr(self.redis_worker, 'redis_client') or self.redis_worker.redis_client is None:
+                self.add_log(f"[{get_timestamp()}] Cannot load events from Redis: Redis not connected")
+                return
+
+            # Get all groups (both user's groups and all groups)
+            all_groups = set()
+            if self.redis_info:
+                all_groups.update(self.redis_info.get('groups', []))
+                all_groups.update(self.redis_info.get('all_groups', []))
+
+            events_loaded = 0
+            for group in all_groups:
+                status_key = f"status:{group}"
+                try:
+                    # Get ALL events from the list (not just the first one)
+                    # Redis lists are ordered newest first (index 0 = most recent)
+                    event_count = self.redis_worker.redis_client.llen(status_key)
+                    if event_count > 0:
+                        # Load up to 20 most recent events (our display limit)
+                        events_to_load = min(event_count, 20)
+                        events = self.redis_worker.redis_client.lrange(status_key, 0, events_to_load - 1)
+
+                        # Process events in reverse order (oldest first) so they appear in correct chronological order
+                        for event_data in reversed(events):
+                            try:
+                                data = json.loads(event_data)
+                                status = data.get('status')
+                                if status:
+                                    # Add event to history (update_group_status will filter out events without source)
+                                    self.update_group_status(group, status, data)
+                                    events_loaded += 1
+                            except json.JSONDecodeError as e:
+                                self.add_log(f"[{get_timestamp()}] Error parsing event from {group}: {e}")
+                                continue
+                except Exception as e:
+                    self.add_log(f"[{get_timestamp()}] Error loading events from {status_key}: {e}")
+                    continue
+
+            if events_loaded > 0:
+                self.add_log(f"[{get_timestamp()}] Loaded {events_loaded} existing events from Redis")
+            else:
+                self.add_log(f"[{get_timestamp()}] No existing events found in Redis")
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error loading events from Redis: {e}")
+
     def show_and_raise(self):
         """Show and raise the window to the top to make it visible"""
         # Make sure it's visible and on top
@@ -4624,6 +4754,9 @@ class BusylightApp(QMainWindow):
                     self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_green']}; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Connected")
                 self.add_log(f"[{get_timestamp()}] Redis connected")
+
+                # Load all existing events from Redis
+                QTimer.singleShot(500, self.load_existing_redis_events)
             else:
                 self.redis_connection_label.setText("Disconnected")
                 self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
@@ -4775,205 +4908,143 @@ class BusylightApp(QMainWindow):
             self.add_log(f"[{get_timestamp()}] Error opening URL: {e}")
 
     def update_group_status(self, group, status, data):
-        """Handle group status updates"""
+        """Handle group status updates for split panel layout"""
+        # Store status data
+        if not hasattr(self, 'group_event_history'):
+            self.group_event_history = {}
+
+        if group not in self.group_event_history:
+            self.group_event_history[group] = []
+
+        # Only add event to history if it has a real source (skip fake/default events)
+        source = data.get('source', '')
+        if source and source != 'unknown':
+            # Check for duplicates - don't add if this exact event already exists
+            event_timestamp = data.get('timestamp', '')
+            is_duplicate = False
+
+            for existing_event in self.group_event_history[group]:
+                existing_data = existing_event.get('data', {})
+                existing_timestamp = existing_data.get('timestamp', '')
+                existing_source = existing_data.get('source', '')
+                existing_status = existing_event.get('status', '')
+
+                # Consider it a duplicate if timestamp, source, and status match
+                if (existing_timestamp == event_timestamp and
+                    existing_source == source and
+                    existing_status == status):
+                    is_duplicate = True
+                    break
+
+            # Only add if not a duplicate
+            if not is_duplicate:
+                self.group_event_history[group].append({
+                    'status': status,
+                    'timestamp': get_timestamp(),
+                    'data': data
+                })
+
+                # Keep only last 20 events
+                self.group_event_history[group] = self.group_event_history[group][-20:]
+
         self.group_statuses[group] = {
             'status': status,
             'timestamp': get_timestamp(),
             'data': data
         }
-        
+
         # Trigger text-to-speech announcement only for groups the user is a member of
         if self.redis_info and group in self.redis_info.get('groups', []):
             self.speak_group_status_event(group, status, data)
-        
-        # Update the UI widget for this group (full widget for user's groups)
+
+        # Update colored dots in list items
+        self.update_group_dot_color(group, status, 'my_groups')
+        self.update_group_dot_color(group, status, 'all_groups')
+
+        # Update detail panel if this group is currently selected
         if group in self.group_widgets:
             widgets = self.group_widgets[group]
-            status_label = widgets['status_label']
-            event_history_text = widgets['event_history_text']
-            
-            # Update status text and color
-            status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
-            status_label.setText(status_name)
-            
-            # Get adaptive colors for styling
-            colors = get_adaptive_colors()
-            
-            # Set modern background color based on status
+            list_widget = widgets.get('list_widget')
+
+            if list_widget and list_widget.currentItem():
+                # Check if the current group is selected
+                current_item = list_widget.currentItem()
+                for key, value in self.list_item_to_group.items():
+                    if value['item'] == current_item and value['group'] == group:
+                        # Update the detail panel
+                        self.update_detail_panel(group, widgets)
+                        break
+
+    def update_group_dot_color(self, group, status, panel_id):
+        """Update the colored dot for a group in the specified panel"""
+        key = f"{panel_id}_{group}"
+        if hasattr(self, 'list_item_to_group') and key in self.list_item_to_group:
+            dot_label = self.list_item_to_group[key]['dot_label']
+
+            # Get status color
             if status in self.light_controller.COLOR_MAP:
                 r, g, b = self.light_controller.COLOR_MAP[status]
-                if status == 'off':
-                    status_label.setStyleSheet(f"""
-                        font-size: 11px;
-                        font-weight: 700;
-                        padding: 12px;
-                        border-radius: 16px;
-                        min-width: 90px;
-                        min-height: 90px;
-                        max-width: 90px;
-                        max-height: 90px;
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
-                        border: 2px solid {colors['border_secondary']};
-                        color: {colors['text_muted']};
-                    """)
-                else:
-                    # Create a subtle gradient for active statuses
-                    # Determine text color based on brightness of status color
-                    brightness = (r + g + b) / 3
-                    text_color = "#000000" if brightness > 128 else "#ffffff"
-                    
-                    status_label.setStyleSheet(f"""
-                        font-size: 11px;
-                        font-weight: 700;
-                        padding: 12px;
-                        border-radius: 16px;
-                        min-width: 90px;
-                        min-height: 90px;
-                        max-width: 90px;
-                        max-height: 90px;
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}), 
-                            stop:1 rgb({r}, {g}, {b}));
-                        border: 2px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
-                        color: {text_color};
-                    """)
+                color = f"rgb({r}, {g}, {b})"
             else:
-                # Default styling for unknown status
-                status_label.setStyleSheet(f"""
-                    font-size: 11px;
-                    font-weight: 700;
-                    padding: 12px;
-                    border-radius: 16px;
-                    min-width: 90px;
-                    min-height: 90px;
-                    max-width: 90px;
-                    max-height: 90px;
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
-                    border: 2px solid {colors['border_secondary']};
-                    color: {colors['text_muted']};
-                """)
-            
-            # Update timestamp
-            timestamp_label = widgets['timestamp_label']
-            timestamp_label.setText(f"Last Update: {get_timestamp()}")
-            
-            # Parse and display event information in the group's history
-            self.parse_and_display_event(group, status, data, event_history_text)
+                color = "#00ff00"  # Default green
 
-        # Also update compact widget for this group if it exists (for all groups overview)
-        elif hasattr(self, 'all_group_widgets') and group in self.all_group_widgets:
-            compact_widgets = self.all_group_widgets[group]
-            compact_status_label = compact_widgets['status_label']
+            dot_label.setStyleSheet(f"color: {color}; font-size: 16px;")
 
-            # Update compact status text and color
+    def update_detail_panel(self, group, widgets):
+        """Update the detail panel with current group information"""
+        status_info = widgets.get('status_info')
+        event_detail = widgets.get('event_detail')
+        header_label = widgets.get('header_label')
+
+        if not status_info or not event_detail:
+            return
+
+        # Get current status
+        if group in self.group_statuses:
+            status_data = self.group_statuses[group]
+            status = status_data['status']
+            timestamp = status_data['timestamp']
             status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
-            compact_status_label.setText(status_name)
 
-            # Get adaptive colors for styling
-            colors = get_adaptive_colors()
+            # Update header and status info
+            if header_label:
+                header_label.setText(f"Group: {group}")
+            status_info.setText(f"Status: {status_name} | Last Update: {timestamp}")
 
-            # Set compact background color based on status
-            if status in self.light_controller.COLOR_MAP:
-                r, g, b = self.light_controller.COLOR_MAP[status]
-                if status == 'off':
-                    compact_status_label.setStyleSheet(f"""
-                        font-size: 8px;
-                        font-weight: 600;
-                        padding: 6px;
-                        border-radius: 12px;
-                        min-width: 50px;
-                        min-height: 30px;
-                        max-width: 50px;
-                        max-height: 30px;
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
-                        border: 1px solid {colors['border_secondary']};
-                        color: {colors['text_muted']};
-                    """)
-                else:
-                    # Create a subtle gradient for active statuses
-                    brightness = (r + g + b) / 3
-                    text_color = "#000000" if brightness > 128 else "#ffffff"
+        # Update event history - clear existing cards and add new ones
+        # event_detail is now a QVBoxLayout, not a QTextEdit
+        # Clear existing widgets
+        while event_detail.count() > 1:  # Keep the stretch at the end
+            item = event_detail.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
-                    compact_status_label.setStyleSheet(f"""
-                        font-size: 8px;
-                        font-weight: 600;
-                        padding: 6px;
-                        border-radius: 12px;
-                        min-width: 50px;
-                        min-height: 30px;
-                        max-width: 50px;
-                        max-height: 30px;
-                        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                            stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
-                            stop:1 rgb({r}, {g}, {b}));
-                        border: 1px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
-                        color: {text_color};
-                    """)
-            else:
-                # Default styling for unknown status
-                compact_status_label.setStyleSheet(f"""
-                    font-size: 8px;
-                    font-weight: 600;
-                    padding: 6px;
-                    border-radius: 12px;
-                    min-width: 50px;
-                    min-height: 30px;
-                    max-width: 50px;
-                    max-height: 30px;
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                        stop:0 {colors['bg_secondary']}, stop:1 {colors['bg_tertiary']});
-                    border: 1px solid {colors['border_secondary']};
-                    color: {colors['text_muted']};
-                """)
+        # Get adaptive colors
+        colors = get_adaptive_colors()
 
+        # Add event cards
+        if hasattr(self, 'group_event_history') and group in self.group_event_history and len(self.group_event_history[group]) > 0:
+            # Sort events by timestamp (most recent first)
+            sorted_events = sorted(
+                self.group_event_history[group],
+                key=lambda e: e.get('data', {}).get('timestamp', ''),
+                reverse=True
+            )
+
+            # Add events in sorted order (most recent first)
+            for event in sorted_events:
+                event_card = self.create_event_card(event, colors)
+                event_detail.insertWidget(event_detail.count() - 1, event_card)  # Insert before stretch
         else:
-            # Fallback logging if no UI widget found
-            print(f"[{get_timestamp()}] Group '{group}' status updated: {status} (no UI widget found)")
-    
-    def parse_and_display_event(self, group, status, data, event_history_text):
-        """Parse incoming event data and display it in the group's event history"""
-        try:
-            # Skip displaying if this is a fake/default event (no source in data)
-            # This happens on startup when there's no event in the queue
-            if 'source' not in data:
-                return
-
-            # Create a formatted event message
-            timestamp = data.get('timestamp', get_timestamp())
-            source = data.get('source', 'Unknown')
-            reason = data.get('reason', '')
-
-            # Format the event message
-            if reason:
-                event_message = f"{timestamp} - {status.upper()} by {source}\nReason: {reason}\n"
-            else:
-                event_message = f"{timestamp} - {status.upper()} by {source}\n"
-            
-            # Add the new event to the top of the history
-            current_text = event_history_text.toPlainText()
-            new_text = event_message + current_text
-            
-            # Limit the history to prevent it from growing too large
-            lines = new_text.split('\n')
-            if len(lines) > 20:  # Keep only last 20 lines
-                lines = lines[:20]
-                new_text = '\n'.join(lines)
-            
-            # Update the event history display
-            event_history_text.setPlainText(new_text)
-            
-            # Auto-scroll to top to show the newest event
-            scrollbar = event_history_text.verticalScrollBar()
-            scrollbar.setValue(0)
-            
-        except Exception as e:
-            # If parsing fails, just add a simple message
-            simple_message = f"{get_timestamp()} - {status.upper()}\n"
-            current_text = event_history_text.toPlainText()
-            event_history_text.setPlainText(simple_message + current_text)
+            # Show "no events" message
+            no_events_label = QLabel("No events yet...")
+            no_events_label.setStyleSheet(f"""
+                color: {colors['text_secondary']};
+                font-size: 13px;
+                padding: 20px;
+            """)
+            no_events_label.setAlignment(Qt.AlignCenter)
+            event_detail.insertWidget(0, no_events_label)
 
     def on_group_clicked(self, group):
         """Handle group status widget click event"""
@@ -4991,255 +5062,461 @@ class BusylightApp(QMainWindow):
     # simulate_status_change method removed to prevent duplicate events
     # The real events now come from Redis after API submission
 
-    def create_full_group_widget(self, group, colors):
-        """Create a full-featured group widget with event history and clickability"""
-        group_widget = QGroupBox(f"Group: {group}")
+    def show_event_detail_dialog(self, event_data):
+        """Show a popup dialog with full event details"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Event Details")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(700)
+        dialog.resize(700, 500)
 
-        # Set bold font directly using Qt's font system
-        bold_font = QFont()
-        bold_font.setBold(True)
-        bold_font.setPointSize(12)  # Larger size for prominence
-        group_widget.setFont(bold_font)
+        colors = get_adaptive_colors()
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
 
-        group_widget.setStyleSheet(f"""
-            QGroupBox {{
-                border: none;
-                border-radius: 12px;
-                margin: 8px;
-                padding: 16px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
-                border: 2px solid {colors['border_secondary']};
-            }}
-            QGroupBox:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {colors['bg_primary']}, stop:1 {colors['hover_bg']});
-                border: 2px solid {colors['accent_blue']};
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 16px;
-                padding: 0 8px 0 8px;
-                color: {colors['text_primary']};
-                font-weight: 800;
-                font-size: 16px;
-            }}
-        """)
-        group_layout = QHBoxLayout()
-        group_layout.setSpacing(16)
-        group_layout.setContentsMargins(0, 0, 0, 0)
+        # Parse event data
+        data = event_data.get('data', {})
+        status = event_data.get('status', 'normal')
+        timestamp = data.get('timestamp', '')
+        source = data.get('source', 'Unknown')
+        reason = data.get('reason', '')
+        ticket = data.get('ticket', '')
+        summary = data.get('summary', '')
+        url = data.get('busylight_pop_url', '')
 
-        # Left side: Status display area
-        status_container = QWidget()
-        status_container.setFixedWidth(130)  # Fixed width to ensure consistent alignment
-        status_container_layout = QVBoxLayout(status_container)
-        status_container_layout.setContentsMargins(0, 0, 0, 0)
-        status_container_layout.setSpacing(8)
-        status_container_layout.setAlignment(Qt.AlignCenter)
+        # Format timestamp
+        if 'T' in timestamp and '.' in timestamp:
+            timestamp = timestamp.split('.')[0].replace('T', ' ')
 
-        # Square status color bar with modern styling
-        status_label = QLabel("Green\n(Normal)")
-        # Apply default 'normal' styling using the existing color system
-        r, g, b = self.light_controller.COLOR_MAP['normal']
-        brightness = (r + g + b) / 3
-        text_color = "#000000" if brightness > 128 else "#ffffff"
-        status_label.setStyleSheet(f"""
-            font-size: 11px;
-            font-weight: 700;
-            padding: 12px;
-            border-radius: 16px;
-            min-width: 90px;
-            min-height: 90px;
-            max-width: 90px;
-            max-height: 90px;
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
-                stop:1 rgb({r}, {g}, {b}));
-            border: 2px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
-            color: {text_color};
-        """)
+        # Get status color
+        if status in self.light_controller.COLOR_MAP:
+            r, g, b = self.light_controller.COLOR_MAP[status]
+            status_color = f"rgb({r}, {g}, {b})"
+        else:
+            status_color = colors['accent_green']
+
+        # Status badge
+        status_label = QLabel(status.upper())
         status_label.setAlignment(Qt.AlignCenter)
-        status_label.setFixedSize(90, 90)
-        status_container_layout.addWidget(status_label, alignment=Qt.AlignCenter)
-
-        # Timestamp label
-        timestamp_label = QLabel("Last Update: Never")
-        timestamp_label.setStyleSheet(f"color: {colors['text_muted']}; font-size: 9px; font-style: italic;")
-        timestamp_label.setAlignment(Qt.AlignCenter)
-        status_container_layout.addWidget(timestamp_label, alignment=Qt.AlignCenter)
-
-        group_layout.addWidget(status_container)
-
-        # Right side: Event history display
-        history_container = QWidget()
-        history_layout = QVBoxLayout(history_container)
-        history_layout.setContentsMargins(0, 0, 0, 0)
-        history_layout.setSpacing(8)
-
-        # Event history label with modern styling
-        event_history_label = QLabel("Event History")
-        event_history_label.setStyleSheet(f"""
-            font-weight: 600;
-            color: {colors['text_primary']};
-            font-size: 12px;
-            padding: 4px 0;
-        """)
-        history_layout.addWidget(event_history_label)
-
-        # Event history text area with modern styling
-        event_history_text = QTextEdit()
-        event_history_text.setReadOnly(True)
-        event_history_text.setMinimumHeight(90)
-        event_history_text.setStyleSheet(f"""
-            font-size: 10px;
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-            background: {colors['input_bg']};
-            border: 1px solid {colors['input_border']};
-            border-radius: 8px;
-            padding: 8px;
-            color: {colors['text_secondary']};
-            selection-background-color: {colors['accent_blue']};
-            selection-color: {colors['bg_primary']};
-        """)
-        history_layout.addWidget(event_history_text)
-
-        group_layout.addWidget(history_container)
-
-        group_widget.setLayout(group_layout)
-
-        # Make the group widget clickable with tactile effect
-        def create_click_handler(group_name, widget):
-            def mouse_press_event(event):
-                # Add pressed effect while preserving bold title
-                widget.setStyleSheet(f"""
-                    QGroupBox {{
-                        border: 2px solid {colors['accent_blue']};
-                        border-radius: 12px;
-                        margin: 7px;
-                        padding: 16px;
-                        background-color: {colors['hover_bg']};
-                    }}
-                    QGroupBox::title {{
-                        subcontrol-origin: margin;
-                        left: 16px;
-                        padding: 0 8px 0 8px;
-                        color: {colors['text_primary']};
-                        font-weight: 800;
-                        font-size: 16px;
-                    }}
-                """)
-
-                # Ensure the font remains bold
-                bold_font = QFont()
-                bold_font.setBold(True)
-                bold_font.setPointSize(12)
-                widget.setFont(bold_font)
-
-                QApplication.processEvents()  # Force immediate update
-
-                # Small delay for tactile effect
-                QTimer.singleShot(100, lambda: self.complete_group_click(group_name, widget))
-
-            return mouse_press_event
-
-        group_widget.mousePressEvent = create_click_handler(group, group_widget)
-
-        # Store references for updates
-        self.group_widgets[group] = {
-            'widget': group_widget,
-            'status_label': status_label,
-            'timestamp_label': timestamp_label,
-            'event_history_text': event_history_text
-        }
-
-        return group_widget
-
-    def create_compact_group_widget(self, group, colors):
-        """Create a display-only compact group widget showing status indicator"""
-        compact_widget = QGroupBox(group)
-        compact_widget.setFixedSize(120, 80)
-
-        # Disable interaction to make it clear this is display-only
-        compact_widget.setEnabled(True)  # Keep enabled for visual updates but no click handling
-        compact_widget.setCursor(Qt.ArrowCursor)  # Normal cursor, not pointer
-
-        # Set smaller font for compact view
-        compact_font = QFont()
-        compact_font.setBold(True)
-        compact_font.setPointSize(9)
-        compact_widget.setFont(compact_font)
-
-        # Style without hover effects to indicate display-only
-        compact_widget.setStyleSheet(f"""
-            QGroupBox {{
-                border: none;
-                border-radius: 8px;
-                margin: 4px;
-                padding: 8px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
-                border: 1px solid {colors['border_secondary']};
-                opacity: 0.9;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 4px 0 4px;
-                color: {colors['text_muted']};
-                font-weight: 600;
-                font-size: 9px;
-            }}
-        """)
-
-        compact_layout = QVBoxLayout(compact_widget)
-        compact_layout.setContentsMargins(4, 8, 4, 4)
-        compact_layout.setSpacing(4)
-        compact_layout.setAlignment(Qt.AlignCenter)
-
-        # Small status indicator
-        status_indicator = QLabel("Normal")
-        # Apply default 'normal' styling using the existing color system
-        r, g, b = self.light_controller.COLOR_MAP['normal']
-        brightness = (r + g + b) / 3
-        text_color = "#000000" if brightness > 128 else "#ffffff"
-        status_indicator.setStyleSheet(f"""
-            font-size: 8px;
-            font-weight: 600;
-            padding: 6px;
-            border-radius: 12px;
-            min-width: 50px;
-            min-height: 30px;
-            max-width: 50px;
-            max-height: 30px;
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 rgb({min(r+30, 255)}, {min(g+30, 255)}, {min(b+30, 255)}),
-                stop:1 rgb({r}, {g}, {b}));
-            border: 1px solid rgb({max(r-40, 0)}, {max(g-40, 0)}, {max(b-40, 0)});
+        # Use black text for light colors (yellow), white for dark colors
+        text_color = "black" if status in ['warning'] else "white"
+        status_label.setStyleSheet(f"""
+            background: {status_color};
             color: {text_color};
+            padding: 8px 20px;
+            border-radius: 15px;
+            font-size: 14px;
+            font-weight: bold;
         """)
-        status_indicator.setAlignment(Qt.AlignCenter)
-        status_indicator.setFixedSize(50, 30)
-        compact_layout.addWidget(status_indicator, alignment=Qt.AlignCenter)
+        layout.addWidget(status_label)
 
-        # Explicitly disable mouse interaction to ensure display-only behavior
-        def ignore_mouse_events(event):
-            """Ignore all mouse events to prevent any interaction"""
-            event.ignore()
+        # Scroll area for content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: none;
+                background: transparent;
+            }}
+        """)
 
-        compact_widget.mousePressEvent = ignore_mouse_events
-        compact_widget.mouseReleaseEvent = ignore_mouse_events
-        compact_widget.mouseDoubleClickEvent = ignore_mouse_events
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Store reference for status updates (but no event history)
-        if not hasattr(self, 'all_group_widgets'):
-            self.all_group_widgets = {}
+        # Add fields with labels and values in separate rows for better wrapping
+        def add_field(label_text, value_text, is_link=False):
+            # Label
+            label = QLabel(label_text)
+            label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px; font-weight: bold;")
+            content_layout.addWidget(label)
 
-        self.all_group_widgets[group] = {
-            'widget': compact_widget,
-            'status_label': status_indicator
-        }
+            # Value
+            if is_link:
+                full_url = value_text if value_text.startswith('http') else f"https://{value_text}"
+                value = QLabel(f'<a href="{full_url}" style="color: {colors["accent_blue"]};">{full_url}</a>')
+                value.setOpenExternalLinks(True)
+                value.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            else:
+                value = QLabel(value_text)
+                value.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        return compact_widget
+            value.setWordWrap(True)
+            value.setStyleSheet(f"""
+                color: {colors['text_primary']};
+                font-size: 13px;
+                padding: 6px 10px;
+                background: {colors['bg_secondary']};
+                border-radius: 4px;
+            """)
+            content_layout.addWidget(value)
+
+        # Add all fields
+        add_field("Time", timestamp)
+        add_field("Source", source)
+
+        if reason:
+            add_field("Reason", reason)
+
+        if ticket:
+            add_field("Ticket", ticket)
+
+        if summary:
+            add_field("Summary", summary)
+
+        if url:
+            add_field("URL", url, is_link=True)
+
+        content_layout.addStretch()
+        scroll_area.setWidget(content_widget)
+        layout.addWidget(scroll_area)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 10px 30px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+
+        dialog.exec()
+
+    def create_event_card(self, event_data, colors):
+        """Create a clickable event card widget with compact styling"""
+        card = QWidget()
+        card.setObjectName("event_card")
+        card.setCursor(Qt.PointingHandCursor)  # Show it's clickable
+
+        # Get status color for the left border
+        status = event_data.get('status', 'normal')
+        if status in self.light_controller.COLOR_MAP:
+            r, g, b = self.light_controller.COLOR_MAP[status]
+            status_color = f"rgb({r}, {g}, {b})"
+        else:
+            status_color = colors['accent_green']
+
+        card.setStyleSheet(f"""
+            QWidget#event_card {{
+                background: {colors['bg_secondary']};
+                border-left: 4px solid {status_color};
+                border-radius: 8px;
+                padding: 10px;
+                margin: 4px 0;
+            }}
+            QWidget#event_card:hover {{
+                background: {colors['hover_bg']};
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+            }}
+        """)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(4)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+
+        # Parse event data
+        data = event_data.get('data', {})
+        timestamp = data.get('timestamp', '')
+        source = data.get('source', 'Unknown')
+        reason = data.get('reason', '')
+        url = data.get('busylight_pop_url', '')
+
+        # Format timestamp - show only time if it's today
+        if 'T' in timestamp:
+            time_part = timestamp.split('T')[1].split('.')[0] if '.' in timestamp else timestamp.split('T')[1]
+            timestamp = time_part
+
+        # Header row with timestamp and status
+        header_layout = QHBoxLayout()
+
+        timestamp_label = QLabel(timestamp)
+        timestamp_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
+        header_layout.addWidget(timestamp_label)
+
+        header_layout.addStretch()
+
+        status_badge = QLabel(status.upper())
+        # Use black text for yellow/warning, white for others
+        badge_text_color = "black" if status in ['warning'] else "white"
+        status_badge.setStyleSheet(f"""
+            background: {status_color};
+            color: {badge_text_color};
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 9px;
+            font-weight: bold;
+        """)
+        header_layout.addWidget(status_badge)
+
+        card_layout.addLayout(header_layout)
+
+        # Source
+        source_label = QLabel(source)
+        source_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; font-weight: 600;")
+        card_layout.addWidget(source_label)
+
+        # Reason - truncate if too long
+        if reason:
+            truncated_reason = reason if len(reason) <= 50 else reason[:47] + "..."
+            reason_label = QLabel(truncated_reason)
+            reason_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
+            card_layout.addWidget(reason_label)
+
+        # URL indicator - just show if URL exists, don't display full URL
+        if url:
+            url_indicator = QLabel("🔗 Has link - click for details")
+            url_indicator.setStyleSheet(f"color: {colors['accent_blue']}; font-size: 10px; font-style: italic;")
+            card_layout.addWidget(url_indicator)
+
+        # Make card clickable to show full details
+        def on_card_click(event):
+            self.show_event_detail_dialog(event_data)
+
+        card.mousePressEvent = on_card_click
+
+        return card
+
+    def create_split_panel_layout(self, groups, colors, panel_id="panel", display_only=False):
+        """Create a split panel view - master-detail layout with colored status dots"""
+        # Main splitter container
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName(panel_id)
+        splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background: {colors['border_secondary']};
+                width: 2px;
+            }}
+            QSplitter::handle:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        # Left panel: List of groups
+        list_widget = QListWidget()
+        list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: {colors['bg_secondary']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
+            QListWidget::item {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+                margin: 1px 0;
+                min-height: 32px;
+            }}
+            QListWidget::item:hover {{
+                background: {colors['hover_bg']};
+                border-radius: 6px;
+            }}
+            QListWidget::item:selected {{
+                background: {colors['accent_blue']};
+                border-radius: 6px;
+            }}
+        """)
+        list_widget.setMinimumWidth(200)
+        list_widget.setMaximumWidth(300)
+
+        # Add groups to list with colored dots
+        # Store mapping of list items to group names for updates
+        if not hasattr(self, 'list_item_to_group'):
+            self.list_item_to_group = {}
+
+        for group in groups:
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 36))  # Set proper height to avoid text cutoff
+
+            # Create widget with colored dot
+            item_widget = QWidget()
+            item_widget.setStyleSheet("background: transparent;")  # Make seamless
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(12, 6, 12, 6)
+            item_layout.setSpacing(10)
+
+            # Status dot - bright green
+            dot_label = QLabel("●")
+            dot_label.setStyleSheet("color: #00ff00; font-size: 16px;")  # Bright green
+            dot_label.setAlignment(Qt.AlignCenter)
+            dot_label.setFixedSize(20, 20)
+            item_layout.addWidget(dot_label)
+
+            # Group name
+            name_label = QLabel(group)
+            name_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; background: transparent;")
+            item_layout.addWidget(name_label, 1)  # Stretch to take remaining space
+
+            list_widget.addItem(item)
+            list_widget.setItemWidget(item, item_widget)
+
+            # Store mapping for status updates
+            self.list_item_to_group[f"{panel_id}_{group}"] = {
+                'item': item,
+                'list_widget': list_widget,
+                'dot_label': dot_label,
+                'group': group
+            }
+
+        # Right panel: Event history detail
+        detail_container = QWidget()
+        detail_layout = QVBoxLayout(detail_container)
+        detail_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Header
+        header_label = QLabel("Select a group to view details")
+        header_label.setStyleSheet(f"""
+            color: {colors['text_primary']};
+            font-size: 16px;
+            font-weight: bold;
+            padding: 8px;
+        """)
+        detail_layout.addWidget(header_label)
+
+        # Status info
+        status_info = QLabel("")
+        status_info.setStyleSheet(f"""
+            color: {colors['text_secondary']};
+            font-size: 13px;
+            padding: 4px 8px;
+        """)
+        detail_layout.addWidget(status_info)
+
+        # Event history - scrollable area with event cards
+        event_scroll = QScrollArea()
+        event_scroll.setWidgetResizable(True)
+        event_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        event_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: {colors['bg_primary']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+            }}
+            QScrollBar:vertical {{
+                background: {colors['bg_secondary']};
+                width: 10px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['border_secondary']};
+                border-radius: 5px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        # Container for event cards
+        event_container = QWidget()
+        event_layout = QVBoxLayout(event_container)
+        event_layout.setSpacing(8)
+        event_layout.setContentsMargins(8, 8, 8, 8)
+        event_layout.addStretch()  # Push cards to top
+
+        event_scroll.setWidget(event_container)
+        detail_layout.addWidget(event_scroll)
+
+        # Store reference to event layout for updates
+        event_detail = event_layout  # Keep same variable name for compatibility
+
+        # Add panels to splitter
+        splitter.addWidget(list_widget)
+        splitter.addWidget(detail_container)
+        splitter.setSizes([250, 750])  # 25% left, 75% right
+
+        # Store references
+        if not hasattr(self, 'group_widgets'):
+            self.group_widgets = {}
+
+        # Create entries for each group in split panel mode
+        for group in groups:
+            self.group_widgets[group] = {
+                'mode': 'split_panel',
+                'widget': splitter,
+                'list_widget': list_widget,
+                'header_label': header_label,
+                'status_info': status_info,
+                'event_detail': event_detail
+            }
+
+        # Handle selection changes
+        def on_selection_changed():
+            current_item = list_widget.currentItem()
+            if current_item:
+                # Find group name from stored mapping
+                group_name = None
+                for key, value in self.list_item_to_group.items():
+                    if value['item'] == current_item and key.startswith(panel_id):
+                        group_name = value['group']
+                        break
+
+                if group_name:
+                    # Load stored data for the selected group
+                    if group_name in self.group_widgets:
+                        self.update_detail_panel(group_name, self.group_widgets[group_name])
+                    else:
+                        # Fallback if no data exists yet
+                        header_label.setText(f"Group: {group_name}")
+                        status_info.setText("Status: Normal | Last Update: Never")
+
+                        # Clear event layout and show "no events" message
+                        while event_detail.count() > 1:
+                            item = event_detail.takeAt(0)
+                            if item.widget():
+                                item.widget().deleteLater()
+
+                        colors = get_adaptive_colors()
+                        no_events_label = QLabel("No events yet...")
+                        no_events_label.setStyleSheet(f"""
+                            color: {colors['text_secondary']};
+                            font-size: 13px;
+                            padding: 20px;
+                        """)
+                        no_events_label.setAlignment(Qt.AlignCenter)
+                        event_detail.insertWidget(0, no_events_label)
+
+        list_widget.currentItemChanged.connect(on_selection_changed)
+
+        # Double-click handler to open update dialog (only for My Groups, not All Groups)
+        def on_double_click(item):
+            # Find which group was double-clicked
+            group_name = None
+            for key, value in self.list_item_to_group.items():
+                if value['item'] == item and key.startswith(panel_id):
+                    group_name = value['group']
+                    break
+
+            if group_name and panel_id == "my_groups":
+                # Open group-specific update dialog
+                dialog = GroupStatusUpdateDialog(group_name, self)
+                dialog.exec()
+
+        list_widget.itemDoubleClicked.connect(on_double_click)
+
+        # Select first item by default
+        if list_widget.count() > 0:
+            list_widget.setCurrentRow(0)
+
+        return splitter
 
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
