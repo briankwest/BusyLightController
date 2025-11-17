@@ -1443,6 +1443,361 @@ class StatusChangeDialog(QDialog):
         """Return the result data"""
         return self.result_data
 
+# Custom status update dialog class
+class CustomStatusDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom Status Update")
+        self.setModal(True)
+        self.resize(500, 450)
+
+        # Setup UI
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Get parent app reference for accessing Redis info and credentials
+        parent_app = self.parent()
+
+        # Get adaptive colors for styling
+        colors = get_adaptive_colors()
+
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+
+        # Title label
+        title_label = QLabel("Set Status on Any Queue/Group")
+        title_label.setStyleSheet(f"""
+            font-size: 16px;
+            font-weight: bold;
+            color: {colors['accent_blue']};
+            margin-bottom: 10px;
+        """)
+        layout.addWidget(title_label)
+
+        # Description label
+        desc_label = QLabel("Update status for any group or user queue (not limited to your groups)")
+        desc_label.setStyleSheet(f"color: {colors['text_secondary']}; margin-bottom: 10px;")
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Form container
+        form_group = QGroupBox()
+        form_group.setStyleSheet(f"""
+            QGroupBox {{
+                border: 2px solid {colors['border_secondary']};
+                border-radius: 8px;
+                padding: 16px;
+                background: {colors['bg_secondary']};
+            }}
+        """)
+        form_layout = QVBoxLayout(form_group)
+        form_layout.setSpacing(12)
+
+        # Status field (dropdown)
+        status_label = QLabel("Status: *")
+        status_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        form_layout.addWidget(status_label)
+
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(['normal', 'warning', 'alert', 'alert-acked', 'error'])
+        self.status_combo.setCurrentText('normal')
+        self.status_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-height: 30px;
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                selection-background-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.status_combo)
+
+        # Group field (dropdown populated from Redis)
+        group_label = QLabel("Group/Queue Name: *")
+        group_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold; margin-top: 8px;")
+        form_layout.addWidget(group_label)
+
+        self.group_combo = QComboBox()
+        self.group_combo.setEditable(False)  # Dropdown only, no custom input
+
+        # Add placeholder as first item
+        self.group_combo.addItem('-- Select a group --')
+
+        # Populate with groups from Redis
+        if parent_app and hasattr(parent_app, 'redis_info') and parent_app.redis_info:
+            all_groups = parent_app.redis_info.get('all_groups', [])
+            if all_groups:
+                self.group_combo.addItems(sorted(all_groups))
+            else:
+                # Fallback to user's groups if all_groups not available
+                user_groups = parent_app.redis_info.get('groups', ['default'])
+                self.group_combo.addItems(sorted(user_groups))
+        else:
+            # Fallback default
+            self.group_combo.addItem('default')
+
+        self.group_combo.setCurrentIndex(0)  # Start with placeholder selected
+        self.group_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-height: 30px;
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                selection-background-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.group_combo)
+
+        # Source field
+        source_label = QLabel("Source: *")
+        source_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold; margin-top: 8px;")
+        form_layout.addWidget(source_label)
+
+        self.source_input = QLineEdit()
+        # Set default to current username
+        if parent_app and hasattr(parent_app, 'username'):
+            self.source_input.setText(parent_app.username)
+        else:
+            self.source_input.setText("Unknown User")
+        self.source_input.setReadOnly(True)  # Make source field immutable
+        self.source_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_secondary']};
+                color: {colors['text_secondary']};
+                min-height: 30px;
+            }}
+        """)
+        form_layout.addWidget(self.source_input)
+
+        # Reason field (multi-line)
+        reason_label = QLabel("Reason:")
+        reason_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold; margin-top: 8px;")
+        form_layout.addWidget(reason_label)
+
+        self.reason_input = QTextEdit()
+        self.reason_input.setPlaceholderText("Enter reason for status change (optional)")
+        self.reason_input.setMaximumHeight(80)
+        self.reason_input.setStyleSheet(f"""
+            QTextEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+            QTextEdit:focus {{
+                border-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.reason_input)
+
+        # URL field
+        url_label = QLabel("Pop-up URL:")
+        url_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold; margin-top: 8px;")
+        form_layout.addWidget(url_label)
+
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://example.com/ticket/123 (optional)")
+        self.url_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-height: 30px;
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
+            }}
+        """)
+        form_layout.addWidget(self.url_input)
+
+        layout.addWidget(form_group)
+
+        # Required fields note
+        required_note = QLabel("* Required fields")
+        required_note.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px; font-style: italic;")
+        layout.addWidget(required_note)
+
+        # Buttons
+        button_box = QDialogButtonBox()
+
+        submit_button = QPushButton("Submit")
+        submit_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['accent_blue']};
+                color: {colors['bg_primary']};
+                border: none;
+                padding: 10px 30px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 14px;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+            }}
+        """)
+        submit_button.clicked.connect(self.submit_status)
+        button_box.addButton(submit_button, QDialogButtonBox.AcceptRole)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+                border: 1px solid {colors['border_secondary']};
+                padding: 10px 30px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 14px;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background-color: {colors['hover_bg']};
+            }}
+        """)
+        cancel_button.clicked.connect(self.reject)
+        button_box.addButton(cancel_button, QDialogButtonBox.RejectRole)
+
+        layout.addWidget(button_box)
+
+    def submit_status(self):
+        """Validate and submit the status update"""
+        # Get field values
+        status = self.status_combo.currentText()
+        group = self.group_combo.currentText().strip()
+        source = self.source_input.text().strip()
+        reason = self.reason_input.toPlainText().strip()
+        url = self.url_input.text().strip()
+
+        # Validate required fields
+        if not group or group.startswith('--'):
+            QMessageBox.warning(self, "Validation Error", "Please select a Group/Queue Name.")
+            self.group_combo.setFocus()
+            return
+
+        if not source:
+            QMessageBox.warning(self, "Validation Error", "Source is required.")
+            self.source_input.setFocus()
+            return
+
+        # Call API
+        self.submit_to_api(status, group, source, reason, url)
+
+    def submit_to_api(self, status, group, source, reason, url):
+        """Submit the status change to the API"""
+        try:
+            # Get parent window to access credentials
+            parent_app = self.parent()
+            if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+                QMessageBox.warning(self, "API Error", "No authentication credentials available.")
+                return
+
+            # Prepare API request
+            api_url = "https://busylight.signalwire.me/api/status"
+
+            payload = {
+                'status': status,
+                'source': source,
+                'group': group,
+                'timestamp': get_timestamp()
+            }
+
+            # Add optional fields if provided
+            if reason:
+                payload['reason'] = reason
+
+            if url:
+                # Auto-prepend https:// if missing
+                if not url.startswith(('http://', 'https://')):
+                    url = f'https://{url}'
+                payload['busylight_pop_url'] = url
+
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': USER_AGENT
+            }
+
+            # Make API call with authentication
+            response = requests.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                auth=(parent_app.username, parent_app.password),
+                timeout=10
+            )
+
+            # Check response
+            if response.status_code == 200:
+                QMessageBox.information(self, "Success", f"Status updated successfully for group '{group}'")
+                if hasattr(parent_app, 'add_log'):
+                    parent_app.add_log(f"[{get_timestamp()}] Custom status update: {status} for {group} by {source}")
+                self.accept()  # Close dialog
+            else:
+                # Try to parse error from response
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}"
+
+                QMessageBox.warning(self, "API Error", f"Failed to update status: {error_msg}")
+                if hasattr(parent_app, 'add_log'):
+                    parent_app.add_log(f"[{get_timestamp()}] Custom status update failed: {error_msg}")
+
+        except requests.exceptions.Timeout:
+            QMessageBox.warning(self, "API Error", "Request timed out. Please try again.")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] API request timeout")
+
+        except requests.exceptions.ConnectionError:
+            QMessageBox.warning(self, "API Error", "Connection failed. Check your network connection.")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] API connection error")
+
+        except Exception as e:
+            QMessageBox.warning(self, "API Error", f"Unexpected error: {str(e)}")
+            if hasattr(parent_app, 'add_log'):
+                parent_app.add_log(f"[{get_timestamp()}] Custom status API Error: {str(e)}")
+
 # Analytics Dashboard class
 class AnalyticsDashboard(QDialog):
     def __init__(self, redis_info, username, password, parent=None):
@@ -3423,6 +3778,33 @@ class BusylightApp(QMainWindow):
             tab_widget.addTab(my_groups_tab, "My Groups")
             tab_widget.addTab(all_groups_tab, "All Groups")
 
+            # Add Custom Status Update button above tabs
+            button_container = QWidget()
+            button_layout = QHBoxLayout(button_container)
+            button_layout.setContentsMargins(0, 0, 0, 10)
+            button_layout.addStretch()
+
+            custom_status_btn = QPushButton("Custom Status Update...")
+            custom_status_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors['accent_blue']};
+                    color: {colors['bg_primary']};
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 6px;
+                    font-weight: 600;
+                    font-size: 14px;
+                    min-width: 180px;
+                }}
+                QPushButton:hover {{
+                    background-color: {colors['hover_bg']};
+                }}
+            """)
+            custom_status_btn.setToolTip("Set status on any queue or group")
+            custom_status_btn.clicked.connect(self.show_custom_status_dialog)
+            button_layout.addWidget(custom_status_btn)
+
+            groups_main_layout.addWidget(button_container)
             groups_main_layout.addWidget(tab_widget)
             groups_main.setLayout(groups_main_layout)
             layout.addWidget(groups_main)
@@ -3842,8 +4224,13 @@ class BusylightApp(QMainWindow):
         
         # Add the Light Control menu to main tray menu
         tray_menu.addMenu(light_control_menu)
+
+        # Add Custom Status Update action
+        custom_status_action = tray_menu.addAction("Custom Status Update...")
+        custom_status_action.triggered.connect(self.show_custom_status_dialog)
+
         tray_menu.addSeparator()
-        
+
         # Add config option
         config_action = tray_menu.addAction("Configuration")
         config_action.triggered.connect(self.show_config_dialog)
@@ -3911,6 +4298,11 @@ class BusylightApp(QMainWindow):
         """Show the help and about dialog"""
         help_dialog = HelpDialog(self)
         help_dialog.exec()
+
+    def show_custom_status_dialog(self):
+        """Show the custom status update dialog"""
+        dialog = CustomStatusDialog(parent=self)
+        dialog.exec()
 
     def apply_config_settings(self):
         """Apply settings from the configuration tab"""
