@@ -140,10 +140,15 @@ class LoginDialog(QDialog):
         
         # Load saved credentials
         self.load_saved_credentials()
-        
+
         # Store credentials
         self.username = ""
         self.password = ""
+
+        # Set up a timer to check if app is quitting (for Ctrl+C handling)
+        self.quit_check_timer = QTimer(self)
+        self.quit_check_timer.timeout.connect(self.check_if_quitting)
+        self.quit_check_timer.start(100)  # Check every 100ms
         
     def center_on_screen(self):
         """Center the dialog on the screen"""
@@ -366,7 +371,15 @@ class LoginDialog(QDialog):
             print(f"[{get_timestamp()}] Username saved for future logins")
         except Exception as e:
             print(f"[{get_timestamp()}] Error saving credentials: {e}")
-    
+
+    def check_if_quitting(self):
+        """Check if the application is quitting and close dialog if so"""
+        app = QApplication.instance()
+        if app and app.property("quitting_from_signal"):
+            print(f"[{get_timestamp()}] Login dialog closing due to quit signal")
+            self.quit_check_timer.stop()
+            self.reject()
+
 # Configuration dialog class
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
