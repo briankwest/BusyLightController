@@ -3692,13 +3692,18 @@ class BusylightApp(QMainWindow):
         self.redis_info = redis_info
         self.group_statuses = {}
         self.group_widgets = {}
+        self.list_item_to_group = {}
+        self.group_event_history = {}
         self.redis_worker = None
         self.worker_thread = None
         self.light_controller = None
         self.tray_icon = None
         self.tray_blink_timer = None
         self.is_tray_visible = True
-        
+
+        # Initialize settings
+        self.settings = QSettings("Busylight", "BusylightController")
+
         # Flag to prevent TTS during app initialization
         self.is_initializing = True
         
@@ -4415,6 +4420,48 @@ class BusylightApp(QMainWindow):
         """Show the custom status update dialog"""
         dialog = CustomStatusDialog(parent=self)
         dialog.exec()
+
+    def get_sorted_groups(self, groups, panel_id):
+        """Get groups sorted by user's saved order preference"""
+        # Load saved order from QSettings
+        settings_key = f"group_order/{panel_id}"
+        saved_order = self.settings.value(settings_key, [])
+
+        # If no saved order or it's not a list, return groups as-is
+        if not saved_order or not isinstance(saved_order, list):
+            return groups
+
+        # Sort groups by saved order, putting new groups at the end
+        sorted_groups = []
+        remaining_groups = list(groups)
+
+        # First add groups in saved order
+        for group_name in saved_order:
+            if group_name in remaining_groups:
+                sorted_groups.append(group_name)
+                remaining_groups.remove(group_name)
+
+        # Then add any new groups that weren't in the saved order
+        sorted_groups.extend(remaining_groups)
+
+        return sorted_groups
+
+    def save_group_order(self, list_widget, panel_id):
+        """Save the current order of groups from the list widget"""
+        group_order = []
+
+        # Iterate through all items in the list widget
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            # Find the group name for this item
+            for key, value in self.list_item_to_group.items():
+                if value['item'] == item and key.startswith(panel_id):
+                    group_order.append(value['group'])
+                    break
+
+        # Save to QSettings
+        settings_key = f"group_order/{panel_id}"
+        self.settings.setValue(settings_key, group_order)
 
     def apply_config_settings(self):
         """Apply settings from the configuration tab"""
@@ -5313,6 +5360,11 @@ class BusylightApp(QMainWindow):
 
         # Left panel: List of groups
         list_widget = QListWidget()
+
+        # Enable drag and drop for reordering
+        list_widget.setDragDropMode(QListWidget.InternalMove)
+        list_widget.setDefaultDropAction(Qt.MoveAction)
+
         list_widget.setStyleSheet(f"""
             QListWidget {{
                 background: {colors['bg_secondary']};
@@ -5345,16 +5397,28 @@ class BusylightApp(QMainWindow):
         if not hasattr(self, 'list_item_to_group'):
             self.list_item_to_group = {}
 
-        for group in groups:
+        # Sort groups by saved order
+        sorted_groups = self.get_sorted_groups(groups, panel_id)
+
+        for group in sorted_groups:
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, 36))  # Set proper height to avoid text cutoff
 
             # Create widget with colored dot
             item_widget = QWidget()
             item_widget.setStyleSheet("background: transparent;")  # Make seamless
+            item_widget.setCursor(Qt.OpenHandCursor)  # Show drag cursor
             item_layout = QHBoxLayout(item_widget)
-            item_layout.setContentsMargins(12, 6, 12, 6)
-            item_layout.setSpacing(10)
+            item_layout.setContentsMargins(4, 6, 8, 6)  # Reduced left margin for more space
+            item_layout.setSpacing(6)  # Reduced spacing between elements
+
+            # Drag handle icon (three horizontal lines)
+            drag_handle = QLabel("☰")
+            drag_handle.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px;")
+            drag_handle.setAlignment(Qt.AlignLeft)  # Left-align the icon
+            drag_handle.setFixedSize(14, 20)  # Slightly narrower
+            drag_handle.setToolTip("Drag to reorder")
+            item_layout.addWidget(drag_handle)
 
             # Status dot - bright green
             dot_label = QLabel("●")
@@ -5514,6 +5578,12 @@ class BusylightApp(QMainWindow):
                 dialog.exec()
 
         list_widget.itemDoubleClicked.connect(on_double_click)
+
+        # Connect signal to save order when items are reordered
+        def on_rows_moved():
+            self.save_group_order(list_widget, panel_id)
+
+        list_widget.model().rowsMoved.connect(on_rows_moved)
 
         # Select first item by default
         if list_widget.count() > 0:
