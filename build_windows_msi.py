@@ -16,11 +16,11 @@ from datetime import datetime
 # Configure logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
-APP_NAME = "SignalWire L1ghtDuty"
-APP_VERSION = "1.0.2"
+APP_NAME = "BLASST Controller"
+APP_VERSION = "1.1.0"
 ICON_FILE = "icon.png"
 MAIN_SCRIPT = "busylight_app_main.py"
-COMPANY_NAME = "SignalWire L1ghtDuty"
+COMPANY_NAME = "SignalWire"
 UPGRADE_CODE = "64D24FC5-F9B7-4FB1-A54B-33D84D888658"
 
 def validate_file(file_path, description):
