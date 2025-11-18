@@ -4652,8 +4652,14 @@ class BusylightApp(QMainWindow):
             print(f"[{get_timestamp()}] Error during application exit: {e}")
         finally:
             # Mark application as quitting to allow window to close properly
-            if QApplication.instance():
-                QApplication.instance().setProperty("is_quitting", True)
+            app = QApplication.instance()
+            if app:
+                app.setProperty("is_quitting", True)
+                # Quit the application if we're not already in the process of quitting
+                # This handles the case where user clicks Exit from menu
+                # The Ctrl+C signal handler will have already called quit()
+                if not app.property("quitting_from_signal"):
+                    app.quit()
     
     def closeEvent(self, event):
         """Handle window close events"""
@@ -5733,6 +5739,7 @@ def main():
     # Set up signal handler for Ctrl+C
     def signal_handler(sig, frame):
         print(f"\n[{get_timestamp()}] Shutting down gracefully...")
+        app.setProperty("quitting_from_signal", True)
         app.quit()
 
     signal.signal(signal.SIGINT, signal_handler)
