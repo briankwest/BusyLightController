@@ -7,6 +7,7 @@ import os
 import platform
 import argparse
 import socket
+import signal
 from datetime import datetime
 import time
 import hashlib
@@ -2982,11 +2983,12 @@ class RedisWorker(QObject):
         self.max_processed_events = 100
 
         # Status priority mapping (highest to lowest priority)
+        # Error -> Alert -> Alert-Acked -> Warning -> Normal
         self.status_priority = {
+            'error': 5,      # Most critical
             'alert': 4,
-            'error': 3,  # Treat error as high priority
+            'alert-acked': 3,
             'warning': 2,
-            'alert-acked': 1,
             'normal': 0,
             'default': 0,
             'off': 0
@@ -3002,8 +3004,12 @@ class RedisWorker(QObject):
             self.redis_port = redis_info['port']
             self.redis_password = redis_info['password']  # Could be None
             # Track both user's groups (for overall status) and all groups (for monitoring)
-            self.user_groups = redis_info['groups']  # Groups user is a member of
+            self.user_groups = list(redis_info['groups'])  # Groups user is a member of
             self.groups = redis_info.get('all_groups', redis_info['groups'])  # All groups to subscribe to
+
+            # Add username to user_groups so personal status affects overall status
+            if self.username and self.username not in self.user_groups:
+                self.user_groups.append(self.username)
         else:
             # Fallback to default values if no redis_info provided
             self.redis_host = "localhost"
@@ -3280,8 +3286,13 @@ class RedisWorker(QObject):
         """Load the most recent status from group-specific status keys"""
         group_found_status = {}
 
+        # Build list of all channels to load status from (groups + username channel)
+        channels_to_load = list(self.groups)
+        if self.username:
+            channels_to_load.append(self.username)
+
         # Get the most recent status for each group from their individual status keys
-        for group in self.groups:
+        for group in channels_to_load:
             status_key = f"status:{group}"
             try:
                 # Get the most recent status event for this group
@@ -3316,8 +3327,8 @@ class RedisWorker(QObject):
             except Exception as e:
                 self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
 
-        # Process and emit status for each group
-        for group in self.groups:
+        # Process and emit status for each group (including username channel)
+        for group in channels_to_load:
             if group in group_found_status:
                 # Found a recent event for this group
                 status = group_found_status[group]['status']
@@ -3438,10 +3449,10 @@ class LightController(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_connect_device)
         
-        # Initialize state maintenance timer to refresh the light state every 30 seconds
+        # Initialize state maintenance timer to refresh the light state every 10 seconds
         self.state_maintenance_timer = QTimer(self)
         self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
-        self.state_maintenance_timer.start(20000)  # 20 second interval
+        self.state_maintenance_timer.start(10000)  # 10 second interval for better device reconnection on macOS
         
         # Initialize effect timer for blinking and other effects
         self.effect_timer = QTimer(self)
@@ -3456,19 +3467,44 @@ class LightController(QObject):
     
     def refresh_light_state(self):
         """Refresh the light state to keep it active"""
-        if self.light is not None and self.current_status != "off":
-            try:
-                # Get current color to check connection
-                _ = self.light.color
-                
-                # Reapply the current status to maintain state, but without logging
-                self.set_status(self.current_status, log_action=False)
-                
-            except Exception:
-                # Light may be disconnected, try to reconnect
+        # Check if devices are actually available (works better on macOS than exception-based detection)
+        try:
+            if USE_OMEGA:
+                available_devices = Busylight_Omega.available_lights()
+            else:
+                available_devices = Light.available_lights()
+
+            device_count = len(available_devices) if available_devices else 0
+
+            # If we have a light object but no devices are available, device was unplugged
+            if self.light is not None and device_count == 0:
                 self.light = None
-                self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
+                self.log_message.emit(f"[{get_timestamp()}] Device unplugged, will try to reconnect...")
+                self.device_status_changed.emit(False, "")
                 self.try_connect_device()
+                return
+
+            # If we don't have a light but devices ARE available, try to connect
+            if self.light is None and device_count > 0:
+                self.log_message.emit(f"[{get_timestamp()}] Device detected, attempting to connect...")
+                self.try_connect_device()
+                return
+
+            # If we have a light and it's not "off", maintain the state
+            if self.light is not None and self.current_status != "off":
+                try:
+                    # Reapply the current status to maintain state, but without logging
+                    self.set_status(self.current_status, log_action=False)
+                except Exception:
+                    # Operation failed, invalidate and reconnect
+                    self.light = None
+                    self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
+                    self.device_status_changed.emit(False, "")
+                    self.try_connect_device()
+
+        except Exception as e:
+            # If we can't even enumerate devices, something is wrong
+            self.log_message.emit(f"[{get_timestamp()}] Error checking for devices: {e}")
     
     def update_effect(self):
         """Update the light effect animation based on the current effect"""
@@ -4551,6 +4587,22 @@ class BusylightApp(QMainWindow):
                 self.light_controller.state_maintenance_timer.stop()
                 print(f"[{get_timestamp()}] Stopped state maintenance timer")
             
+            # Stop the analytics dashboard thread if it exists
+            if hasattr(self, 'embedded_analytics') and self.embedded_analytics:
+                try:
+                    if hasattr(self.embedded_analytics, 'listener') and self.embedded_analytics.listener:
+                        self.embedded_analytics.listener.stop()
+                    if hasattr(self.embedded_analytics, 'listen_thread') and self.embedded_analytics.listen_thread:
+                        self.embedded_analytics.listen_thread.quit()
+                        if not self.embedded_analytics.listen_thread.wait(1000):
+                            self.embedded_analytics.listen_thread.terminate()
+                            self.embedded_analytics.listen_thread.wait(500)
+                        self.embedded_analytics.listen_thread.deleteLater()
+                        self.embedded_analytics.listen_thread = None
+                        print(f"[{get_timestamp()}] Stopped analytics thread")
+                except Exception as e:
+                    print(f"[{get_timestamp()}] Error stopping analytics thread: {e}")
+
             # Stop the worker thread safely
             if hasattr(self, 'redis_worker') and self.redis_worker:
                 try:
@@ -4558,15 +4610,20 @@ class BusylightApp(QMainWindow):
                     print(f"[{get_timestamp()}] Stopped Redis worker")
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error stopping Redis worker: {e}")
-            
+
             if hasattr(self, 'worker_thread') and self.worker_thread:
                 try:
                     self.worker_thread.quit()
-                    # Wait with timeout to prevent hanging
-                    if not self.worker_thread.wait(1000):  # 1 second timeout
+                    # Wait with longer timeout and process events to allow clean shutdown
+                    if not self.worker_thread.wait(2000):  # 2 second timeout
                         print(f"[{get_timestamp()}] Worker thread did not terminate cleanly, forcing termination")
                         self.worker_thread.terminate()
-                    print(f"[{get_timestamp()}] Worker thread stopped")
+                        self.worker_thread.wait(500)  # Wait a bit after terminate
+                    else:
+                        print(f"[{get_timestamp()}] Worker thread stopped")
+                    # Delete the thread object to ensure cleanup
+                    self.worker_thread.deleteLater()
+                    self.worker_thread = None
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error stopping worker thread: {e}")
             
@@ -4583,18 +4640,20 @@ class BusylightApp(QMainWindow):
                 try:
                     self.tray_icon.hide()
                     self.tray_icon.setVisible(False)
+                    # Explicitly delete the tray icon to prevent segfault on macOS
+                    self.tray_icon.deleteLater()
+                    self.tray_icon = None
                     print(f"[{get_timestamp()}] Tray icon hidden")
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error hiding tray icon: {e}")
-                
+
             print(f"[{get_timestamp()}] Application exit complete")
         except Exception as e:
             print(f"[{get_timestamp()}] Error during application exit: {e}")
         finally:
             # Mark application as quitting to allow window to close properly
-            QApplication.instance().setProperty("is_quitting", True)
-            # Exit the application
-            QApplication.quit()
+            if QApplication.instance():
+                QApplication.instance().setProperty("is_quitting", True)
     
     def closeEvent(self, event):
         """Handle window close events"""
@@ -4679,10 +4738,7 @@ class BusylightApp(QMainWindow):
         
         # Try to connect
         self.light_controller.try_connect_device()
-        
-        # After connecting, try to retrieve the last status from Redis
-        self.refresh_status_from_redis()
-        
+
         # If still not connected after the attempt, show a more obvious message
         if not self.light_controller.light and not self.light_controller.simulation_mode:
             self.device_label.setText("Device not found!")
@@ -4938,6 +4994,10 @@ class BusylightApp(QMainWindow):
     
     def open_ticket_url(self, url):
         """Open the ticket URL using a secure method"""
+        # Skip URL opening during app initialization to avoid opening historical URLs
+        if self.is_initializing:
+            return
+
         # Load URL settings
         settings = QSettings("Busylight", "BusylightController")
         url_enabled = settings.value("url/enabled", False, type=bool)
@@ -5669,6 +5729,20 @@ class BusylightApp(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # Keep app running when window is closed
+
+    # Set up signal handler for Ctrl+C
+    def signal_handler(sig, frame):
+        print(f"\n[{get_timestamp()}] Shutting down gracefully...")
+        app.quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Allow Python to handle signals by setting up a timer
+    # This ensures the Python interpreter can process the signal
+    timer = QTimer()
+    timer.start(500)  # Check for signals every 500ms
+    timer.timeout.connect(lambda: None)  # No-op to allow signal processing
     
     # Create default icon if needed
     create_default_icon()
@@ -5722,11 +5796,18 @@ def cleanup_application(window):
         if window:
             # Call on_exit explicitly for clean shutdown
             window.on_exit()
+            # Explicitly delete the window to prevent segfault
+            window.deleteLater()
     except Exception as e:
         print(f"Error during application cleanup: {e}")
-    
-    # Clear any pending events
-    QApplication.processEvents()
+
+    # Process all pending events multiple times to ensure cleanup completes
+    for _ in range(5):
+        QApplication.processEvents()
+        time.sleep(0.05)
+
+    # Final delay to allow Qt to finish cleanup
+    time.sleep(0.1)
 
 def create_default_icon():
     """Create a default icon file if it doesn't exist"""
