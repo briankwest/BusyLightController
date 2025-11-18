@@ -847,7 +847,8 @@ class ConfigDialog(QDialog):
                 # Use PowerShell with safer argument passing
                 ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
                 ps_script = ps_script.format(test_message.replace("'", "''"))  # PowerShell escape single quotes
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                # CREATE_NO_WINDOW prevents console window from appearing
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
                 self.test_status_label.setText("TTS test command sent")
                 self.test_status_label.setStyleSheet("color: green;")
             
@@ -4872,7 +4873,8 @@ class BusylightApp(QMainWindow):
                 # Use PowerShell with safer argument passing
                 ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
                 ps_script = ps_script.format(summary.replace("'", "''"))  # PowerShell escape single quotes
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                # CREATE_NO_WINDOW prevents console window from appearing
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
                 self.add_log(f"[{get_timestamp()}] Speaking ticket summary using Windows speech")
             
             else:  # Linux and other platforms - attempt to use festival
@@ -4921,7 +4923,8 @@ class BusylightApp(QMainWindow):
                 # Use PowerShell with safer argument passing
                 ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
                 ps_script = ps_script.format(tts_message.replace("'", "''"))  # PowerShell escape single quotes
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False)
+                # CREATE_NO_WINDOW prevents console window from appearing
+                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
                 self.add_log(f"[{get_timestamp()}] Speaking group status event using Windows speech")
             
             else:  # Linux and other platforms - attempt to use festival
