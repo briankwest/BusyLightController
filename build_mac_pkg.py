@@ -9,10 +9,11 @@ import subprocess
 import shutil
 from datetime import datetime
 
-APP_NAME = "Busylight Controller"
-APP_VERSION = "1.0.2"  # Update this as needed
+APP_NAME = "BLASST Controller"
+APP_VERSION = "1.1.0"  # Update this as needed
 ICON_FILE = "icon.png"  # Ensure this exists
 MAIN_SCRIPT = "busylight_app_main.py"
+COMPANY_NAME = "SignalWire"
 
 def run_command(cmd, cwd=None):
     """Run a shell command and print output"""
