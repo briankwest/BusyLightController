@@ -2982,11 +2982,12 @@ class RedisWorker(QObject):
         self.max_processed_events = 100
 
         # Status priority mapping (highest to lowest priority)
+        # Error -> Alert -> Alert-Acked -> Warning -> Normal
         self.status_priority = {
+            'error': 5,      # Most critical
             'alert': 4,
-            'error': 3,  # Treat error as high priority
+            'alert-acked': 3,
             'warning': 2,
-            'alert-acked': 1,
             'normal': 0,
             'default': 0,
             'off': 0
@@ -3002,8 +3003,12 @@ class RedisWorker(QObject):
             self.redis_port = redis_info['port']
             self.redis_password = redis_info['password']  # Could be None
             # Track both user's groups (for overall status) and all groups (for monitoring)
-            self.user_groups = redis_info['groups']  # Groups user is a member of
+            self.user_groups = list(redis_info['groups'])  # Groups user is a member of
             self.groups = redis_info.get('all_groups', redis_info['groups'])  # All groups to subscribe to
+
+            # Add username to user_groups so personal status affects overall status
+            if self.username and self.username not in self.user_groups:
+                self.user_groups.append(self.username)
         else:
             # Fallback to default values if no redis_info provided
             self.redis_host = "localhost"
@@ -3280,8 +3285,13 @@ class RedisWorker(QObject):
         """Load the most recent status from group-specific status keys"""
         group_found_status = {}
 
+        # Build list of all channels to load status from (groups + username channel)
+        channels_to_load = list(self.groups)
+        if self.username:
+            channels_to_load.append(self.username)
+
         # Get the most recent status for each group from their individual status keys
-        for group in self.groups:
+        for group in channels_to_load:
             status_key = f"status:{group}"
             try:
                 # Get the most recent status event for this group
@@ -3316,8 +3326,8 @@ class RedisWorker(QObject):
             except Exception as e:
                 self.log_message.emit(f"[{get_timestamp()}] Error accessing status key '{status_key}': {e}")
 
-        # Process and emit status for each group
-        for group in self.groups:
+        # Process and emit status for each group (including username channel)
+        for group in channels_to_load:
             if group in group_found_status:
                 # Found a recent event for this group
                 status = group_found_status[group]['status']
@@ -4704,10 +4714,7 @@ class BusylightApp(QMainWindow):
         
         # Try to connect
         self.light_controller.try_connect_device()
-        
-        # After connecting, try to retrieve the last status from Redis
-        self.refresh_status_from_redis()
-        
+
         # If still not connected after the attempt, show a more obvious message
         if not self.light_controller.light and not self.light_controller.simulation_mode:
             self.device_label.setText("Device not found!")
