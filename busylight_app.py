@@ -4970,6 +4970,10 @@ class BusylightApp(QMainWindow):
     
     def open_ticket_url(self, url):
         """Open the ticket URL using a secure method"""
+        # Skip URL opening during app initialization to avoid opening historical URLs
+        if self.is_initializing:
+            return
+
         # Load URL settings
         settings = QSettings("Busylight", "BusylightController")
         url_enabled = settings.value("url/enabled", False, type=bool)
