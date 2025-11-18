@@ -31,6 +31,9 @@ APP_VERSION = "1.1.0"
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
 
+# User-Agent for API requests
+USER_AGENT = f"BusylightController/{APP_VERSION}"
+
 # Busylight
 try:
     # Try the import that works with your device
