@@ -3438,10 +3438,10 @@ class LightController(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_connect_device)
         
-        # Initialize state maintenance timer to refresh the light state every 30 seconds
+        # Initialize state maintenance timer to refresh the light state every 10 seconds
         self.state_maintenance_timer = QTimer(self)
         self.state_maintenance_timer.timeout.connect(self.refresh_light_state)
-        self.state_maintenance_timer.start(20000)  # 20 second interval
+        self.state_maintenance_timer.start(10000)  # 10 second interval for better device reconnection on macOS
         
         # Initialize effect timer for blinking and other effects
         self.effect_timer = QTimer(self)
@@ -3456,19 +3456,44 @@ class LightController(QObject):
     
     def refresh_light_state(self):
         """Refresh the light state to keep it active"""
-        if self.light is not None and self.current_status != "off":
-            try:
-                # Get current color to check connection
-                _ = self.light.color
-                
-                # Reapply the current status to maintain state, but without logging
-                self.set_status(self.current_status, log_action=False)
-                
-            except Exception:
-                # Light may be disconnected, try to reconnect
+        # Check if devices are actually available (works better on macOS than exception-based detection)
+        try:
+            if USE_OMEGA:
+                available_devices = Busylight_Omega.available_lights()
+            else:
+                available_devices = Light.available_lights()
+
+            device_count = len(available_devices) if available_devices else 0
+
+            # If we have a light object but no devices are available, device was unplugged
+            if self.light is not None and device_count == 0:
                 self.light = None
-                self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
+                self.log_message.emit(f"[{get_timestamp()}] Device unplugged, will try to reconnect...")
+                self.device_status_changed.emit(False, "")
                 self.try_connect_device()
+                return
+
+            # If we don't have a light but devices ARE available, try to connect
+            if self.light is None and device_count > 0:
+                self.log_message.emit(f"[{get_timestamp()}] Device detected, attempting to connect...")
+                self.try_connect_device()
+                return
+
+            # If we have a light and it's not "off", maintain the state
+            if self.light is not None and self.current_status != "off":
+                try:
+                    # Reapply the current status to maintain state, but without logging
+                    self.set_status(self.current_status, log_action=False)
+                except Exception:
+                    # Operation failed, invalidate and reconnect
+                    self.light = None
+                    self.log_message.emit(f"[{get_timestamp()}] Lost connection to light during refresh, will try to reconnect...")
+                    self.device_status_changed.emit(False, "")
+                    self.try_connect_device()
+
+        except Exception as e:
+            # If we can't even enumerate devices, something is wrong
+            self.log_message.emit(f"[{get_timestamp()}] Error checking for devices: {e}")
     
     def update_effect(self):
         """Update the light effect animation based on the current effect"""
