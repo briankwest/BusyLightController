@@ -7,6 +7,7 @@ import os
 import platform
 import argparse
 import socket
+import signal
 from datetime import datetime
 import time
 import hashlib
@@ -4586,6 +4587,22 @@ class BusylightApp(QMainWindow):
                 self.light_controller.state_maintenance_timer.stop()
                 print(f"[{get_timestamp()}] Stopped state maintenance timer")
             
+            # Stop the analytics dashboard thread if it exists
+            if hasattr(self, 'embedded_analytics') and self.embedded_analytics:
+                try:
+                    if hasattr(self.embedded_analytics, 'listener') and self.embedded_analytics.listener:
+                        self.embedded_analytics.listener.stop()
+                    if hasattr(self.embedded_analytics, 'listen_thread') and self.embedded_analytics.listen_thread:
+                        self.embedded_analytics.listen_thread.quit()
+                        if not self.embedded_analytics.listen_thread.wait(1000):
+                            self.embedded_analytics.listen_thread.terminate()
+                            self.embedded_analytics.listen_thread.wait(500)
+                        self.embedded_analytics.listen_thread.deleteLater()
+                        self.embedded_analytics.listen_thread = None
+                        print(f"[{get_timestamp()}] Stopped analytics thread")
+                except Exception as e:
+                    print(f"[{get_timestamp()}] Error stopping analytics thread: {e}")
+
             # Stop the worker thread safely
             if hasattr(self, 'redis_worker') and self.redis_worker:
                 try:
@@ -4593,15 +4610,20 @@ class BusylightApp(QMainWindow):
                     print(f"[{get_timestamp()}] Stopped Redis worker")
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error stopping Redis worker: {e}")
-            
+
             if hasattr(self, 'worker_thread') and self.worker_thread:
                 try:
                     self.worker_thread.quit()
-                    # Wait with timeout to prevent hanging
-                    if not self.worker_thread.wait(1000):  # 1 second timeout
+                    # Wait with longer timeout and process events to allow clean shutdown
+                    if not self.worker_thread.wait(2000):  # 2 second timeout
                         print(f"[{get_timestamp()}] Worker thread did not terminate cleanly, forcing termination")
                         self.worker_thread.terminate()
-                    print(f"[{get_timestamp()}] Worker thread stopped")
+                        self.worker_thread.wait(500)  # Wait a bit after terminate
+                    else:
+                        print(f"[{get_timestamp()}] Worker thread stopped")
+                    # Delete the thread object to ensure cleanup
+                    self.worker_thread.deleteLater()
+                    self.worker_thread = None
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error stopping worker thread: {e}")
             
@@ -4618,18 +4640,20 @@ class BusylightApp(QMainWindow):
                 try:
                     self.tray_icon.hide()
                     self.tray_icon.setVisible(False)
+                    # Explicitly delete the tray icon to prevent segfault on macOS
+                    self.tray_icon.deleteLater()
+                    self.tray_icon = None
                     print(f"[{get_timestamp()}] Tray icon hidden")
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error hiding tray icon: {e}")
-                
+
             print(f"[{get_timestamp()}] Application exit complete")
         except Exception as e:
             print(f"[{get_timestamp()}] Error during application exit: {e}")
         finally:
             # Mark application as quitting to allow window to close properly
-            QApplication.instance().setProperty("is_quitting", True)
-            # Exit the application
-            QApplication.quit()
+            if QApplication.instance():
+                QApplication.instance().setProperty("is_quitting", True)
     
     def closeEvent(self, event):
         """Handle window close events"""
@@ -5705,6 +5729,20 @@ class BusylightApp(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # Keep app running when window is closed
+
+    # Set up signal handler for Ctrl+C
+    def signal_handler(sig, frame):
+        print(f"\n[{get_timestamp()}] Shutting down gracefully...")
+        app.quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Allow Python to handle signals by setting up a timer
+    # This ensures the Python interpreter can process the signal
+    timer = QTimer()
+    timer.start(500)  # Check for signals every 500ms
+    timer.timeout.connect(lambda: None)  # No-op to allow signal processing
     
     # Create default icon if needed
     create_default_icon()
@@ -5758,11 +5796,18 @@ def cleanup_application(window):
         if window:
             # Call on_exit explicitly for clean shutdown
             window.on_exit()
+            # Explicitly delete the window to prevent segfault
+            window.deleteLater()
     except Exception as e:
         print(f"Error during application cleanup: {e}")
-    
-    # Clear any pending events
-    QApplication.processEvents()
+
+    # Process all pending events multiple times to ensure cleanup completes
+    for _ in range(5):
+        QApplication.processEvents()
+        time.sleep(0.05)
+
+    # Final delay to allow Qt to finish cleanup
+    time.sleep(0.1)
 
 def create_default_icon():
     """Create a default icon file if it doesn't exist"""
