@@ -27,7 +27,7 @@ import subprocess
 import webbrowser
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -3453,11 +3453,10 @@ class LightController(QObject):
         self.current_volume = 0
         self.effect_timer = None
         self.device_connection_attempted = False
-        
-        # Load settings
-        settings = QSettings("Busylight", "BusylightController")
-        self.allow_simulation = settings.value("app/simulation_mode", True, type=bool)
-        
+
+        # Always allow simulation mode (UI always updates regardless of physical device)
+        self.allow_simulation = True
+
         # Initialize reconnect timer
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.timeout.connect(self.try_connect_device)
@@ -3597,19 +3596,22 @@ class LightController(QObject):
     
     def set_status(self, status, log_action=False):
         """Set light status with optional logging and UI updates."""
-        if not self.light and not self.simulation_mode:
-            if log_action:
-                self.log_message.emit(f"[{get_timestamp()}] No light device found and simulation mode is disabled")
-            return
-            
+        # Normalize status first
         if status not in self.COLOR_MAP:
             status = 'normal'
-            
+
+        # Always update current status and UI, regardless of physical device availability
         self.current_status = status
         color = self.COLOR_MAP[status]
-        
-        # Always emit color changed signal for UI updates, but only log if requested
+
+        # Always emit color changed signal for UI updates (tray icon, status display, etc.)
         self.color_changed.emit(status)
+
+        # If no physical device is available, return after UI updates
+        if not self.light and not self.simulation_mode:
+            if log_action:
+                self.log_message.emit(f"[{get_timestamp()}] No light device found (UI updated)")
+            return
         
         if log_action:
             self.log_message.emit(f"[{get_timestamp()}] Changing light to {self.COLOR_NAMES[status]}")
@@ -4315,11 +4317,6 @@ class BusylightApp(QMainWindow):
         self.autostart_checkbox.setChecked(settings.value("app/autostart", False, type=bool))
         app_layout.addRow("Autostart:", self.autostart_checkbox)
 
-        self.simulation_mode_checkbox = QCheckBox()
-        self.simulation_mode_checkbox.setStyleSheet(checkbox_style)
-        self.simulation_mode_checkbox.setChecked(settings.value("app/simulation_mode", True, type=bool))
-        app_layout.addRow("Simulation Mode:", self.simulation_mode_checkbox)
-
         layout.addWidget(app_group)
 
         # Add stretch to push content to top
@@ -4531,8 +4528,6 @@ class BusylightApp(QMainWindow):
             settings.setValue("app/start_minimized", self.start_minimized_checkbox.isChecked())
         if hasattr(self, 'autostart_checkbox'):
             settings.setValue("app/autostart", self.autostart_checkbox.isChecked())
-        if hasattr(self, 'simulation_mode_checkbox'):
-            settings.setValue("app/simulation_mode", self.simulation_mode_checkbox.isChecked())
 
         self.add_log(f"[{get_timestamp()}] Settings applied successfully")
 
