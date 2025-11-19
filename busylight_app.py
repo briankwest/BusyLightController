@@ -27,7 +27,7 @@ import subprocess
 import webbrowser
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -5797,10 +5797,22 @@ def main():
     
     # Create main window with credentials
     window = BusylightApp(username, password, redis_info)
-    
+
+    # Check if we should show the window on startup
+    settings = QSettings("Busylight", "BusylightController")
+    start_minimized = settings.value("app/start_minimized", False, type=bool)
+
+    if not start_minimized:
+        # Show the window if not starting minimized
+        window.show_and_raise()
+        print(f"[{get_timestamp()}] Window shown on startup (start_minimized={start_minimized})")
+    else:
+        # Start minimized to tray
+        print(f"[{get_timestamp()}] Starting minimized to system tray (start_minimized={start_minimized})")
+
     # Set up proper exit handling
     app.aboutToQuit.connect(lambda: cleanup_application(window))
-    
+
     # Start the application
     return app.exec()
 
