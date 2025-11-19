@@ -17,6 +17,7 @@ The application uses:
 - PySide6 for the GUI framework
 - Redis for ticket system integration
 - `busylight-for-humans` library for hardware control
+- `pyttsx3` for cross-platform text-to-speech
 - PyInstaller for packaging
 
 ## Development Commands
@@ -98,6 +99,30 @@ python build.py
 - **URL Pop Feature**: Events containing `busylight_pop_url` will automatically open the URL in the default browser (if enabled in configuration)
   - URLs without protocol automatically prepend `https://`
   - Only opens for users who are members of the event's group
+
+### Text-to-Speech (TTS) Integration
+- Uses **pyttsx3** library for cross-platform offline TTS
+- Announces ticket summaries and group status changes
+- **Configuration Options**:
+  - Enable/disable TTS globally
+  - Speech rate (50-300 words per minute, default: 150)
+  - Volume control (0-100%, default: 90%)
+  - Voice selection (English voices only)
+- **Platform Requirements**:
+  - **macOS**: No additional requirements (uses built-in NSSpeechSynthesizer)
+  - **Windows**: No additional requirements (uses SAPI5)
+  - **Linux**: Requires `espeak` to be installed (`sudo apt-get install espeak`)
+- **Implementation**:
+  - `TTSWorker` class (`busylight_app.py` ~line 2978): QThread-based worker for non-blocking TTS
+  - `get_available_english_voices()` function (~line 130): Returns list of available English voices
+  - `speak_ticket_summary()` method (~line 5005): Speaks ticket summaries
+  - `speak_group_status_event()` method (~line 5030): Speaks group status changes
+  - Configuration UI in both Config tab and Settings dialog
+- **Settings Storage**:
+  - `tts/enabled` - Boolean, enables/disables TTS
+  - `tts/rate` - Integer (50-300), speech rate in WPM
+  - `tts/volume` - Float (0.0-1.0), volume level
+  - `tts/voice_id` - String, ID of selected voice
 
 ### Security Features
 - HTTPS for API communication

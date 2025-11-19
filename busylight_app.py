@@ -23,8 +23,10 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QSplitter, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
+from PySide6.QtWidgets import QSpinBox, QSlider
 import subprocess
 import webbrowser
+import pyttsx3
 
 # Application version - increment this with each code change
 APP_VERSION = "1.1.2"
@@ -124,6 +126,40 @@ def get_adaptive_colors():
             'button_bg': '#f8f9fa',
             'hover_bg': '#f1f3f4'
         }
+
+def get_available_english_voices():
+    """Get list of available English TTS voices, excluding novelty voices"""
+    try:
+        engine = pyttsx3.init()
+        all_voices = engine.getProperty('voices')
+
+        # List of novelty/non-professional voice names to exclude
+        novelty_voices = [
+            'albert', 'bad news', 'bahh', 'bells', 'boing', 'bubbles', 'cellos',
+            'deranged', 'good news', 'hysterical', 'jester', 'junior', 'pipe organ',
+            'superstar', 'trinoids', 'whisper', 'wobble', 'zarvox', 'ralph'
+        ]
+
+        # Filter for English voices only, excluding novelty voices
+        english_voices = []
+        for voice in all_voices:
+            # Check if this is a novelty voice
+            is_novelty = any(novelty.lower() in voice.name.lower() for novelty in novelty_voices)
+            if is_novelty:
+                continue
+
+            # Check if voice languages contain 'en' (case insensitive)
+            if voice.languages and any('en' in str(lang).lower() for lang in voice.languages):
+                english_voices.append({'id': voice.id, 'name': voice.name})
+            # Fallback: check voice name for English indicators
+            elif 'english' in voice.name.lower() or 'en_' in voice.id.lower() or 'en-' in voice.id.lower():
+                english_voices.append({'id': voice.id, 'name': voice.name})
+
+        engine.stop()
+        return english_voices
+    except Exception as e:
+        print(f"Error getting voices: {e}")
+        return []
 
 # Login dialog class
 class LoginDialog(QDialog):
@@ -468,9 +504,81 @@ class ConfigDialog(QDialog):
                 border-color: {colors['accent_blue']};
             }}
         """)
-        
-        self.tts_command_input = QLineEdit()
-        self.tts_command_input.setStyleSheet(f"""
+
+        # Speech rate spinbox
+        self.tts_rate_label = QLabel("Speech Rate:")
+        self.tts_rate_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_rate_spinbox = QSpinBox()
+        self.tts_rate_spinbox.setRange(50, 300)
+        self.tts_rate_spinbox.setValue(self.settings.value("tts/rate", 150, type=int))
+        self.tts_rate_spinbox.setSuffix(" WPM")
+        self.tts_rate_spinbox.setStyleSheet(f"""
+            QSpinBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+        """)
+
+        # Volume slider
+        self.tts_volume_label = QLabel("Volume:")
+        self.tts_volume_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_volume_slider = QSlider(Qt.Horizontal)
+        self.tts_volume_slider.setRange(0, 100)
+        self.tts_volume_slider.setValue(int(self.settings.value("tts/volume", 0.9, type=float) * 100))
+        self.tts_volume_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {colors['input_border']};
+                height: 8px;
+                background: {colors['input_bg']};
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors['accent_blue']};
+                border: none;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+        """)
+
+        # Voice selection dropdown
+        self.tts_voice_label = QLabel("Voice:")
+        self.tts_voice_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_voice_combo = QComboBox()
+        self.tts_voice_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+        """)
+
+        # Populate voices
+        english_voices = get_available_english_voices()
+        saved_voice_id = self.settings.value("tts/voice_id", None)
+        selected_index = 0
+
+        for idx, voice in enumerate(english_voices):
+            self.tts_voice_combo.addItem(voice['name'], voice['id'])
+            if saved_voice_id and voice['id'] == saved_voice_id:
+                selected_index = idx
+
+        if english_voices:
+            self.tts_voice_combo.setCurrentIndex(selected_index)
+
+        # Custom test text input
+        self.tts_test_text_label = QLabel("Test Text:")
+        self.tts_test_text_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_test_text_input = QLineEdit()
+        self.tts_test_text_input.setPlaceholderText("Enter text to test voice (optional)")
+        self.tts_test_text_input.setStyleSheet(f"""
             QLineEdit {{
                 padding: 8px 12px;
                 border: 1px solid {colors['input_border']};
@@ -484,14 +592,10 @@ class ConfigDialog(QDialog):
                 outline: none;
             }}
         """)
-        
-        # Create a layout for command input and test button
-        tts_cmd_layout = QHBoxLayout()
-        tts_cmd_layout.addWidget(self.tts_command_input)
-        
+
         # Add test button
-        self.tts_test_button = QPushButton("Test")
-        self.tts_test_button.setToolTip("Test the TTS command")
+        self.tts_test_button = QPushButton("Test Voice")
+        self.tts_test_button.setToolTip("Test the TTS settings with custom or default text")
         self.tts_test_button.clicked.connect(self.test_tts_command)
         self.tts_test_button.setStyleSheet(f"""
             QPushButton {{
@@ -512,15 +616,29 @@ class ConfigDialog(QDialog):
                 color: {colors['text_primary']};
             }}
         """)
-        tts_cmd_layout.addWidget(self.tts_test_button)
-        
+
+        # Add all controls to layout
         tts_layout.addRow("Enable Text-to-Speech:", self.tts_enabled_checkbox)
-        tts_layout.addRow("Command Template:", tts_cmd_layout)
-        
-        # Add help text
-        tts_help = QLabel("Use {summary} as a placeholder for the ticket summary")
-        tts_help.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; font-size: 12px; padding: 4px 0;")
-        tts_layout.addRow("", tts_help)
+        tts_layout.addRow(self.tts_rate_label, self.tts_rate_spinbox)
+        tts_layout.addRow(self.tts_volume_label, self.tts_volume_slider)
+        tts_layout.addRow(self.tts_voice_label, self.tts_voice_combo)
+        tts_layout.addRow(self.tts_test_text_label, self.tts_test_text_input)
+        tts_layout.addRow("", self.tts_test_button)
+
+        # Store TTS widgets for show/hide
+        self.tts_config_widgets = [
+            self.tts_rate_label, self.tts_rate_spinbox,
+            self.tts_volume_label, self.tts_volume_slider,
+            self.tts_voice_label, self.tts_voice_combo,
+            self.tts_test_text_label, self.tts_test_text_input,
+            self.tts_test_button
+        ]
+
+        # Connect checkbox to toggle visibility
+        self.tts_enabled_checkbox.stateChanged.connect(self.toggle_tts_config_visibility)
+
+        # Set initial visibility
+        self.toggle_tts_config_visibility()
         
         # URL Handler settings group
         url_group = QGroupBox("URL Handler Settings")
@@ -777,9 +895,8 @@ class ConfigDialog(QDialog):
         # self.redis_token_input.setText(token)
         
         # Load text-to-speech settings
-        default_tts_cmd = self.get_default_tts_command()
         self.tts_enabled_checkbox.setChecked(self.settings.value("tts/enabled", False, type=bool))
-        self.tts_command_input.setText(self.settings.value("tts/command_template", default_tts_cmd))
+        # TTS rate, volume, and voice settings will be loaded when UI controls are created
         
         # Load URL handler settings
         default_url_cmd = self.get_default_url_command()
@@ -791,16 +908,6 @@ class ConfigDialog(QDialog):
         self.autostart_checkbox.setChecked(self.settings.value("app/autostart", False, type=bool))
         self.simulation_mode_checkbox.setChecked(self.settings.value("app/simulation_mode", True, type=bool))
     
-    def get_default_tts_command(self):
-        """Get the default text-to-speech command for the current platform"""
-        system = platform.system()
-        if system == "Darwin":  # macOS
-            return 'say "{summary}"'
-        elif system == "Windows":
-            return 'powershell -command "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(\'{summary}\')"'
-        else:  # Linux or other
-            return 'echo "{summary}" | festival --tts'  # Basic fallback
-    
     def get_default_url_command(self):
         """Get the default URL opening command for the current platform"""
         system = platform.system()
@@ -810,7 +917,14 @@ class ConfigDialog(QDialog):
             return 'start "" "{url}"'
         else:  # Linux or other
             return 'xdg-open "{url}"'
-            
+
+    def toggle_tts_config_visibility(self):
+        """Show or hide TTS configuration controls based on enabled checkbox"""
+        if hasattr(self, 'tts_config_widgets'):
+            is_enabled = self.tts_enabled_checkbox.isChecked()
+            for widget in self.tts_config_widgets:
+                widget.setVisible(is_enabled)
+
     def save_settings(self):
         # Save Redis settings
         # self.settings.setValue("redis/host", self.redis_host_input.text())
@@ -819,7 +933,9 @@ class ConfigDialog(QDialog):
         
         # Save text-to-speech settings
         self.settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
-        self.settings.setValue("tts/command_template", self.tts_command_input.text())
+        self.settings.setValue("tts/rate", self.tts_rate_spinbox.value())
+        self.settings.setValue("tts/volume", self.tts_volume_slider.value() / 100.0)
+        self.settings.setValue("tts/voice_id", self.tts_voice_combo.currentData())
         
         # Save URL handler settings
         self.settings.setValue("url/enabled", self.url_enabled_checkbox.isChecked())
@@ -849,38 +965,39 @@ class ConfigDialog(QDialog):
             self.redis_token_input.setEchoMode(QLineEdit.Password)
 
     def test_tts_command(self):
-        """Test the text-to-speech functionality securely"""
+        """Test the text-to-speech functionality using pyttsx3"""
         try:
-            # Use platform-specific approaches for safer TTS testing
-            system = platform.system()
-            test_message = "This is a test of the text to speech system"
-            
-            if system == "Darwin":  # macOS
-                # Use macOS say command directly
-                subprocess.Popen(["say", test_message], shell=False)
-                self.test_status_label.setText("TTS test command sent")
-                self.test_status_label.setStyleSheet("color: green;")
-            
-            elif system == "Windows":
-                # Use PowerShell with safer argument passing
-                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
-                ps_script = ps_script.format(test_message.replace("'", "''"))  # PowerShell escape single quotes
-                # CREATE_NO_WINDOW prevents console window from appearing
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
-                self.test_status_label.setText("TTS test command sent")
-                self.test_status_label.setStyleSheet("color: green;")
-            
-            else:  # Linux and other platforms - attempt to use festival
-                # Safer approach for Linux using pipes instead of shell
-                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
-                process.communicate(test_message.encode())
-                self.test_status_label.setText("TTS test command sent")
-                self.test_status_label.setStyleSheet("color: green;")
-                
+            # Get custom text if provided, otherwise use default
+            custom_text = ""
+            if hasattr(self, 'tts_test_text_input'):
+                custom_text = self.tts_test_text_input.text().strip()
+            test_message = custom_text if custom_text else "This is a test of the text to speech system"
+
+            # Get current TTS settings from Config dialog widgets
+            rate = self.tts_rate_spinbox.value() if hasattr(self, 'tts_rate_spinbox') else 150
+            volume = (self.tts_volume_slider.value() / 100.0) if hasattr(self, 'tts_volume_slider') else 0.9
+            voice_id = self.tts_voice_combo.currentData() if hasattr(self, 'tts_voice_combo') else None
+
+            # Create and start TTS test worker
+            self.tts_test_worker = TTSWorker(test_message, rate, volume, voice_id)
+            self.tts_test_worker.finished.connect(
+                lambda: self.test_status_label.setText("TTS test completed successfully")
+            )
+            self.tts_test_worker.error.connect(
+                lambda err: (
+                    self.test_status_label.setText(f"TTS error: {err}"),
+                    self.test_status_label.setStyleSheet("color: red;")
+                )
+            )
+            self.tts_test_worker.start()
+
+            self.test_status_label.setText("TTS test started...")
+            self.test_status_label.setStyleSheet("color: green;")
+
         except Exception as e:
             self.test_status_label.setText(f"Error: {str(e)}")
             self.test_status_label.setStyleSheet("color: red;")
-            
+
         # Clear the message after a delay
         QTimer.singleShot(3000, lambda: self.test_status_label.setText(""))
     
@@ -2972,6 +3089,43 @@ class TicketStatsListener(QObject):
         """Stop the listener"""
         self.is_running = False
 
+# Worker class for non-blocking text-to-speech
+class TTSWorker(QThread):
+    """Thread worker for text-to-speech operations"""
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, text, rate=150, volume=0.9, voice_id=None, parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.rate = rate
+        self.volume = volume
+        self.voice_id = voice_id
+
+    def run(self):
+        """Run TTS in background thread"""
+        engine = None
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty('rate', self.rate)
+            engine.setProperty('volume', self.volume)
+
+            # Set voice if specified
+            if self.voice_id:
+                engine.setProperty('voice', self.voice_id)
+
+            engine.say(self.text)
+            engine.runAndWait()
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            if engine:
+                try:
+                    engine.stop()
+                except:
+                    pass
+
 # Worker class to handle redis operations in background
 class RedisWorker(QObject):
     status_updated = pyqtSignal(str)
@@ -4287,10 +4441,144 @@ class BusylightApp(QMainWindow):
         tts_layout = QFormLayout(tts_group)
         tts_layout.setSpacing(12)
 
-        self.tts_enabled_checkbox = QCheckBox()
-        self.tts_enabled_checkbox.setStyleSheet(checkbox_style)
-        self.tts_enabled_checkbox.setChecked(settings.value("tts/enabled", False, type=bool))
-        tts_layout.addRow("Enable TTS:", self.tts_enabled_checkbox)
+        # TTS Enabled checkbox
+        self.tts_enabled_checkbox_settings = QCheckBox()
+        self.tts_enabled_checkbox_settings.setStyleSheet(checkbox_style)
+        self.tts_enabled_checkbox_settings.setChecked(settings.value("tts/enabled", False, type=bool))
+        tts_layout.addRow("Enable TTS:", self.tts_enabled_checkbox_settings)
+
+        # TTS Rate spinbox
+        self.tts_rate_label_settings = QLabel("Speech Rate:")
+        self.tts_rate_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_rate_spinbox_settings = QSpinBox()
+        self.tts_rate_spinbox_settings.setRange(50, 300)
+        self.tts_rate_spinbox_settings.setValue(settings.value("tts/rate", 150, type=int))
+        self.tts_rate_spinbox_settings.setSuffix(" WPM")
+        self.tts_rate_spinbox_settings.setStyleSheet(f"""
+            QSpinBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+        """)
+        tts_layout.addRow(self.tts_rate_label_settings, self.tts_rate_spinbox_settings)
+
+        # TTS Volume slider
+        self.tts_volume_label_settings = QLabel("Volume:")
+        self.tts_volume_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_volume_slider_settings = QSlider(Qt.Horizontal)
+        self.tts_volume_slider_settings.setRange(0, 100)
+        self.tts_volume_slider_settings.setValue(int(settings.value("tts/volume", 0.9, type=float) * 100))
+        self.tts_volume_slider_settings.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {colors['input_border']};
+                height: 8px;
+                background: {colors['input_bg']};
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors['accent_blue']};
+                border: none;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+        """)
+        tts_layout.addRow(self.tts_volume_label_settings, self.tts_volume_slider_settings)
+
+        # TTS Voice dropdown
+        self.tts_voice_label_settings = QLabel("Voice:")
+        self.tts_voice_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_voice_combo_settings = QComboBox()
+        self.tts_voice_combo_settings.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+        """)
+
+        # Populate voices
+        english_voices = get_available_english_voices()
+        saved_voice_id = settings.value("tts/voice_id", None)
+        selected_index = 0
+
+        for idx, voice in enumerate(english_voices):
+            self.tts_voice_combo_settings.addItem(voice['name'], voice['id'])
+            if saved_voice_id and voice['id'] == saved_voice_id:
+                selected_index = idx
+
+        if english_voices:
+            self.tts_voice_combo_settings.setCurrentIndex(selected_index)
+
+        tts_layout.addRow(self.tts_voice_label_settings, self.tts_voice_combo_settings)
+
+        # Custom test text input
+        self.tts_test_text_label_settings = QLabel("Test Text:")
+        self.tts_test_text_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.tts_test_text_input_settings = QLineEdit()
+        self.tts_test_text_input_settings.setPlaceholderText("Enter text to test voice (optional)")
+        self.tts_test_text_input_settings.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+            QLineEdit:focus {{
+                border-color: {colors['accent_blue']};
+                outline: none;
+            }}
+        """)
+        tts_layout.addRow(self.tts_test_text_label_settings, self.tts_test_text_input_settings)
+
+        # Test button for Settings dialog
+        self.tts_test_button_settings = QPushButton("Test Voice")
+        self.tts_test_button_settings.setToolTip("Test the TTS settings with custom or default text")
+        self.tts_test_button_settings.clicked.connect(self.test_tts_settings_dialog)
+        self.tts_test_button_settings.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        tts_layout.addRow("", self.tts_test_button_settings)
+
+        # Store TTS widgets for show/hide in settings dialog
+        self.tts_settings_widgets = [
+            self.tts_rate_label_settings, self.tts_rate_spinbox_settings,
+            self.tts_volume_label_settings, self.tts_volume_slider_settings,
+            self.tts_voice_label_settings, self.tts_voice_combo_settings,
+            self.tts_test_text_label_settings, self.tts_test_text_input_settings,
+            self.tts_test_button_settings
+        ]
+
+        # Connect checkbox to toggle visibility
+        self.tts_enabled_checkbox_settings.stateChanged.connect(self.toggle_tts_settings_visibility)
+
+        # Set initial visibility
+        self.toggle_tts_settings_visibility()
 
         layout.addWidget(tts_group)
 
@@ -4518,6 +4806,39 @@ class BusylightApp(QMainWindow):
         settings_key = f"group_order/{panel_id}"
         self.settings.setValue(settings_key, group_order)
 
+    def toggle_tts_settings_visibility(self):
+        """Show or hide TTS configuration controls in Settings dialog"""
+        if hasattr(self, 'tts_settings_widgets'):
+            is_enabled = self.tts_enabled_checkbox_settings.isChecked()
+            for widget in self.tts_settings_widgets:
+                widget.setVisible(is_enabled)
+
+    def test_tts_settings_dialog(self):
+        """Test TTS from the Settings dialog"""
+        try:
+            # Get custom text if provided, otherwise use default
+            custom_text = self.tts_test_text_input_settings.text().strip()
+            test_message = custom_text if custom_text else "This is a test of the text to speech system"
+
+            # Get current TTS settings from Settings dialog
+            rate = self.tts_rate_spinbox_settings.value()
+            volume = self.tts_volume_slider_settings.value() / 100.0
+            voice_id = self.tts_voice_combo_settings.currentData()
+
+            # Create and start TTS test worker
+            self.tts_test_worker = TTSWorker(test_message, rate, volume, voice_id)
+            self.tts_test_worker.finished.connect(
+                lambda: self.add_log(f"[{get_timestamp()}] TTS test completed from Settings dialog")
+            )
+            self.tts_test_worker.error.connect(
+                lambda err: self.add_log(f"[{get_timestamp()}] TTS test error: {err}")
+            )
+            self.tts_test_worker.start()
+            self.add_log(f"[{get_timestamp()}] TTS test started from Settings dialog")
+
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error testing TTS: {e}")
+
     def apply_config_settings(self):
         """Apply settings from the configuration tab"""
         # Disable button and update text to show updating state
@@ -4529,9 +4850,15 @@ class BusylightApp(QMainWindow):
         # Save settings from the configuration widgets
         settings = QSettings("Busylight", "BusylightController")
 
-        # Save TTS settings
-        if hasattr(self, 'tts_enabled_checkbox'):
-            settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
+        # Save TTS settings (from Settings dialog widgets)
+        if hasattr(self, 'tts_enabled_checkbox_settings'):
+            settings.setValue("tts/enabled", self.tts_enabled_checkbox_settings.isChecked())
+        if hasattr(self, 'tts_rate_spinbox_settings'):
+            settings.setValue("tts/rate", self.tts_rate_spinbox_settings.value())
+        if hasattr(self, 'tts_volume_slider_settings'):
+            settings.setValue("tts/volume", self.tts_volume_slider_settings.value() / 100.0)
+        if hasattr(self, 'tts_voice_combo_settings'):
+            settings.setValue("tts/voice_id", self.tts_voice_combo_settings.currentData())
 
         # Save URL settings
         if hasattr(self, 'url_enabled_checkbox'):
@@ -4942,95 +5269,69 @@ class BusylightApp(QMainWindow):
                 self.add_log(f"[{get_timestamp()}] URL popup skipped - user not a member of group '{group}'")
     
     def speak_ticket_summary(self, summary):
-        """Speak the ticket summary using the configured command"""
+        """Speak the ticket summary using pyttsx3"""
         # Load TTS settings
         settings = QSettings("Busylight", "BusylightController")
         tts_enabled = settings.value("tts/enabled", False, type=bool)
-        
+
         if not tts_enabled:
             return
-            
-        # Get the command template
-        tts_cmd_template = settings.value("tts/command_template", "")
-        if not tts_cmd_template:
-            self.add_log(f"[{get_timestamp()}] Warning: TTS enabled but no command template configured")
-            return
-        
-        try:
-            # Use platform-specific approaches for safer TTS
-            system = platform.system()
-            
-            if system == "Darwin":  # macOS
-                # Use macOS say command directly with list arguments
-                subprocess.Popen(["say", summary], shell=False)
-                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using macOS say command")
-            
-            elif system == "Windows":
-                # Use PowerShell with safer argument passing
-                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
-                ps_script = ps_script.format(summary.replace("'", "''"))  # PowerShell escape single quotes
-                # CREATE_NO_WINDOW prevents console window from appearing
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
-                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using Windows speech")
-            
-            else:  # Linux and other platforms - attempt to use festival
-                # Safer approach for Linux using pipes instead of shell
-                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
-                process.communicate(summary.encode())
-                self.add_log(f"[{get_timestamp()}] Speaking ticket summary using festival")
-                
-        except Exception as e:
-            self.add_log(f"[{get_timestamp()}] Error executing TTS command: {e}")
+
+        # Get TTS configuration
+        rate = settings.value("tts/rate", 150, type=int)
+        volume = settings.value("tts/volume", 0.9, type=float)
+        voice_id = settings.value("tts/voice_id", None)
+
+        # Create and start TTS worker thread
+        self.tts_worker = TTSWorker(summary, rate, volume, voice_id)
+        self.tts_worker.finished.connect(
+            lambda: self.add_log(f"[{get_timestamp()}] TTS completed: ticket summary")
+        )
+        self.tts_worker.error.connect(
+            lambda err: self.add_log(f"[{get_timestamp()}] TTS error: {err}")
+        )
+        self.tts_worker.start()
+        self.add_log(f"[{get_timestamp()}] Speaking ticket summary using pyttsx3")
     
     def speak_group_status_event(self, group, status, data):
-        """Speak group status events using text-to-speech"""
+        """Speak group status events using pyttsx3"""
         # Skip TTS during app initialization to avoid speaking historical events
         if self.is_initializing:
             return
-            
+
         # Load TTS settings
         settings = QSettings("Busylight", "BusylightController")
         tts_enabled = settings.value("tts/enabled", False, type=bool)
-        
+
         if not tts_enabled:
             return
-        
-        try:
-            # Create a human-readable message for the status event
-            status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
-            source = data.get('source', 'Unknown')
-            reason = data.get('reason', '')
-            
-            # Build the TTS message
-            if reason:
-                tts_message = f"Group {group} status changed to {status_name} by {source}. Reason: {reason}"
-            else:
-                tts_message = f"Group {group} status changed to {status_name} by {source}"
-            
-            # Use platform-specific approaches for safer TTS
-            system = platform.system()
-            
-            if system == "Darwin":  # macOS
-                # Use macOS say command directly with list arguments
-                subprocess.Popen(["say", tts_message], shell=False)
-                self.add_log(f"[{get_timestamp()}] Speaking group status event using macOS say command")
-            
-            elif system == "Windows":
-                # Use PowerShell with safer argument passing
-                ps_script = "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{0}')"
-                ps_script = ps_script.format(tts_message.replace("'", "''"))  # PowerShell escape single quotes
-                # CREATE_NO_WINDOW prevents console window from appearing
-                subprocess.Popen(["powershell", "-Command", ps_script], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
-                self.add_log(f"[{get_timestamp()}] Speaking group status event using Windows speech")
-            
-            else:  # Linux and other platforms - attempt to use festival
-                # Safer approach for Linux using pipes instead of shell
-                process = subprocess.Popen(["festival", "--tts"], stdin=subprocess.PIPE, shell=False)
-                process.communicate(tts_message.encode())
-                self.add_log(f"[{get_timestamp()}] Speaking group status event using festival")
-                
-        except Exception as e:
-            self.add_log(f"[{get_timestamp()}] Error executing TTS for group status event: {e}")
+
+        # Create a human-readable message for the status event
+        status_name = self.light_controller.COLOR_NAMES.get(status, status.title())
+        source = data.get('source', 'Unknown')
+        reason = data.get('reason', '')
+
+        # Build the TTS message
+        if reason:
+            tts_message = f"Group {group} status changed to {status_name} by {source}. Reason: {reason}"
+        else:
+            tts_message = f"Group {group} status changed to {status_name} by {source}"
+
+        # Get TTS configuration
+        rate = settings.value("tts/rate", 150, type=int)
+        volume = settings.value("tts/volume", 0.9, type=float)
+        voice_id = settings.value("tts/voice_id", None)
+
+        # Create and start TTS worker thread
+        self.tts_worker = TTSWorker(tts_message, rate, volume, voice_id)
+        self.tts_worker.finished.connect(
+            lambda: self.add_log(f"[{get_timestamp()}] TTS completed: group status event")
+        )
+        self.tts_worker.error.connect(
+            lambda err: self.add_log(f"[{get_timestamp()}] TTS error: {err}")
+        )
+        self.tts_worker.start()
+        self.add_log(f"[{get_timestamp()}] Speaking group status event using pyttsx3")
     
     def open_ticket_url(self, url):
         """Open the ticket URL using a secure method"""
