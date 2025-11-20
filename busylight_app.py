@@ -24,9 +24,10 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
 from PySide6.QtWidgets import QSpinBox, QSlider
-import subprocess
 import webbrowser
-import pyttsx3
+from gtts import gTTS
+import pygame
+from io import BytesIO
 
 # Application version - increment this with each code change
 APP_VERSION = "1.1.2"
@@ -128,38 +129,18 @@ def get_adaptive_colors():
         }
 
 def get_available_english_voices():
-    """Get list of available English TTS voices, excluding novelty voices"""
-    try:
-        engine = pyttsx3.init()
-        all_voices = engine.getProperty('voices')
-
-        # List of novelty/non-professional voice names to exclude
-        novelty_voices = [
-            'albert', 'bad news', 'bahh', 'bells', 'boing', 'bubbles', 'cellos',
-            'deranged', 'good news', 'hysterical', 'jester', 'junior', 'pipe organ',
-            'superstar', 'trinoids', 'whisper', 'wobble', 'zarvox', 'ralph'
-        ]
-
-        # Filter for English voices only, excluding novelty voices
-        english_voices = []
-        for voice in all_voices:
-            # Check if this is a novelty voice
-            is_novelty = any(novelty.lower() in voice.name.lower() for novelty in novelty_voices)
-            if is_novelty:
-                continue
-
-            # Check if voice languages contain 'en' (case insensitive)
-            if voice.languages and any('en' in str(lang).lower() for lang in voice.languages):
-                english_voices.append({'id': voice.id, 'name': voice.name})
-            # Fallback: check voice name for English indicators
-            elif 'english' in voice.name.lower() or 'en_' in voice.id.lower() or 'en-' in voice.id.lower():
-                english_voices.append({'id': voice.id, 'name': voice.name})
-
-        engine.stop()
-        return english_voices
-    except Exception as e:
-        print(f"Error getting voices: {e}")
-        return []
+    """Get list of available English TTS accents for gTTS"""
+    # gTTS uses Google's TTS API with different accents via TLD (top-level domain)
+    return [
+        {'id': 'en-us', 'name': 'English (US)'},
+        {'id': 'en-uk', 'name': 'English (UK)'},
+        {'id': 'en-au', 'name': 'English (Australia)'},
+        {'id': 'en-in', 'name': 'English (India)'},
+        {'id': 'en-ca', 'name': 'English (Canada)'},
+        {'id': 'en-za', 'name': 'English (South Africa)'},
+        {'id': 'en-ie', 'name': 'English (Ireland)'},
+        {'id': 'en-ng', 'name': 'English (Nigeria)'},
+    ]
 
 # Login dialog class
 class LoginDialog(QDialog):
@@ -278,7 +259,10 @@ class LoginDialog(QDialog):
         
         # Form layout for credentials
         form_layout = QFormLayout()
-        
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
         # Username input
         self.username_input = QLineEdit()
         #self.username_input.setPlaceholderText("Enter your username")
@@ -482,10 +466,13 @@ class ConfigDialog(QDialog):
                 font-size: 16px;
             }}
         """)
-        
+
         tts_layout = QFormLayout(tts_group)
+        tts_layout.setLabelAlignment(Qt.AlignLeft)
+        tts_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        tts_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         tts_layout.setSpacing(12)
-        
+
         self.tts_enabled_checkbox = QCheckBox()
         self.tts_enabled_checkbox.setStyleSheet(f"""
             QCheckBox {{
@@ -505,21 +492,26 @@ class ConfigDialog(QDialog):
             }}
         """)
 
-        # Speech rate spinbox
-        self.tts_rate_label = QLabel("Speech Rate:")
+        # Speech rate checkbox (Fast/Slow)
+        self.tts_rate_label = QLabel("Slow Speech:")
         self.tts_rate_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
-        self.tts_rate_spinbox = QSpinBox()
-        self.tts_rate_spinbox.setRange(50, 300)
-        self.tts_rate_spinbox.setValue(self.settings.value("tts/rate", 150, type=int))
-        self.tts_rate_spinbox.setSuffix(" WPM")
-        self.tts_rate_spinbox.setStyleSheet(f"""
-            QSpinBox {{
-                padding: 8px 12px;
-                border: 1px solid {colors['input_border']};
-                border-radius: 8px;
-                background: {colors['input_bg']};
+        self.tts_slow_checkbox = QCheckBox()
+        self.tts_slow_checkbox.setChecked(self.settings.value("tts/slow", False, type=bool))
+        self.tts_slow_checkbox.setStyleSheet(f"""
+            QCheckBox {{
                 font-size: 13px;
                 color: {colors['text_secondary']};
+            }}
+            QCheckBox::indicator {{
+                width: 20px;
+                height: 20px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 4px;
+                background: {colors['input_bg']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {colors['accent_blue']};
+                border-color: {colors['accent_blue']};
             }}
         """)
 
@@ -619,7 +611,7 @@ class ConfigDialog(QDialog):
 
         # Add all controls to layout
         tts_layout.addRow("Enable Text-to-Speech:", self.tts_enabled_checkbox)
-        tts_layout.addRow(self.tts_rate_label, self.tts_rate_spinbox)
+        tts_layout.addRow(self.tts_rate_label, self.tts_slow_checkbox)
         tts_layout.addRow(self.tts_volume_label, self.tts_volume_slider)
         tts_layout.addRow(self.tts_voice_label, self.tts_voice_combo)
         tts_layout.addRow(self.tts_test_text_label, self.tts_test_text_input)
@@ -627,7 +619,7 @@ class ConfigDialog(QDialog):
 
         # Store TTS widgets for show/hide
         self.tts_config_widgets = [
-            self.tts_rate_label, self.tts_rate_spinbox,
+            self.tts_rate_label, self.tts_slow_checkbox,
             self.tts_volume_label, self.tts_volume_slider,
             self.tts_voice_label, self.tts_voice_combo,
             self.tts_test_text_label, self.tts_test_text_input,
@@ -667,8 +659,12 @@ class ConfigDialog(QDialog):
         """)
         
         url_layout = QFormLayout(url_group)
+        url_layout.setLabelAlignment(Qt.AlignLeft)
+        url_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        url_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         url_layout.setSpacing(12)
-        
+
+
         self.url_enabled_checkbox = QCheckBox()
         self.url_enabled_checkbox.setStyleSheet(f"""
             QCheckBox {{
@@ -768,6 +764,9 @@ class ConfigDialog(QDialog):
         """)
         
         general_layout = QFormLayout(general_group)
+        general_layout.setLabelAlignment(Qt.AlignLeft)
+        general_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        general_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         general_layout.setSpacing(12)
         
         # Common checkbox style
@@ -933,7 +932,7 @@ class ConfigDialog(QDialog):
         
         # Save text-to-speech settings
         self.settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
-        self.settings.setValue("tts/rate", self.tts_rate_spinbox.value())
+        self.settings.setValue("tts/slow", self.tts_slow_checkbox.isChecked())
         self.settings.setValue("tts/volume", self.tts_volume_slider.value() / 100.0)
         self.settings.setValue("tts/voice_id", self.tts_voice_combo.currentData())
         
@@ -974,25 +973,18 @@ class ConfigDialog(QDialog):
             test_message = custom_text if custom_text else "This is a test of the text to speech system"
 
             # Get current TTS settings from Config dialog widgets
-            rate = self.tts_rate_spinbox.value() if hasattr(self, 'tts_rate_spinbox') else 150
+            slow = self.tts_slow_checkbox.isChecked() if hasattr(self, 'tts_slow_checkbox') else False
             volume = (self.tts_volume_slider.value() / 100.0) if hasattr(self, 'tts_volume_slider') else 0.9
             voice_id = self.tts_voice_combo.currentData() if hasattr(self, 'tts_voice_combo') else None
 
-            # Create and start TTS test worker
-            self.tts_test_worker = TTSWorker(test_message, rate, volume, voice_id)
-            self.tts_test_worker.finished.connect(
-                lambda: self.test_status_label.setText("TTS test completed successfully")
-            )
-            self.tts_test_worker.error.connect(
-                lambda err: (
-                    self.test_status_label.setText(f"TTS error: {err}"),
-                    self.test_status_label.setStyleSheet("color: red;")
-                )
-            )
-            self.tts_test_worker.start()
-
-            self.test_status_label.setText("TTS test started...")
-            self.test_status_label.setStyleSheet("color: green;")
+            # Add to TTS queue for testing
+            if hasattr(self, 'tts_manager') and self.tts_manager:
+                self.tts_manager.add_to_queue(test_message, slow, volume, voice_id, "test")
+                self.test_status_label.setText("TTS test added to queue...")
+                self.test_status_label.setStyleSheet("color: green;")
+            else:
+                self.test_status_label.setText("TTS manager not available")
+                self.test_status_label.setStyleSheet("color: red;")
 
         except Exception as e:
             self.test_status_label.setText(f"Error: {str(e)}")
@@ -1352,11 +1344,11 @@ class StatusChangeDialog(QDialog):
         
         # Form layout for controls
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form_layout.setSpacing(12)
-        
-        # Style form labels
-        form_layout.setLabelAlignment(Qt.AlignRight)
-        
+
         # Actions dropdown
         self.action_combo = QComboBox()
         self.action_combo.addItem("Normal", "normal")
@@ -3090,41 +3082,137 @@ class TicketStatsListener(QObject):
         self.is_running = False
 
 # Worker class for non-blocking text-to-speech
-class TTSWorker(QThread):
-    """Thread worker for text-to-speech operations"""
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+class TTSManager(QThread):
+    """Queue-based TTS manager with single pyttsx3 engine"""
+    tts_completed = pyqtSignal(str)  # Emits message type when complete
+    tts_error = pyqtSignal(str)
 
-    def __init__(self, text, rate=150, volume=0.9, voice_id=None, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.text = text
-        self.rate = rate
-        self.volume = volume
-        self.voice_id = voice_id
+        self.queue = []
+        self.is_running = True
+        self.engine = None
+        self.current_settings = {}
+        self.max_queue_size = 5  # Limit queue to prevent buildup
+
+    def add_to_queue(self, text, slow=False, volume=0.9, voice_id=None, message_type="unknown"):
+        """Add a TTS request to the queue"""
+        # If queue is at max size, remove oldest items
+        if len(self.queue) >= self.max_queue_size:
+            removed = self.queue.pop(0)
+            print(f"[{get_timestamp()}] TTS queue full, dropping oldest message: '{removed['text'][:30]}...'")
+
+        self.queue.append({
+            'text': text,
+            'slow': slow,
+            'volume': volume,
+            'voice_id': voice_id,
+            'message_type': message_type
+        })
+        speed_str = "slow" if slow else "normal"
+        print(f"[{get_timestamp()}] TTS request queued: '{text[:50]}...' (speed: {speed_str}, queue size: {len(self.queue)})")
+
+    def stop(self):
+        """Stop the TTS manager"""
+        self.is_running = False
+        if self.engine:
+            try:
+                self.engine.stop()
+            except:
+                pass
 
     def run(self):
-        """Run TTS in background thread"""
-        engine = None
+        """Process TTS queue continuously"""
+        print(f"[{get_timestamp()}] TTSManager: Starting queue processor with gTTS")
+
+        # Initialize pygame mixer once
         try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', self.rate)
-            engine.setProperty('volume', self.volume)
-
-            # Set voice if specified
-            if self.voice_id:
-                engine.setProperty('voice', self.voice_id)
-
-            engine.say(self.text)
-            engine.runAndWait()
-            self.finished.emit()
+            pygame.mixer.init()
+            print(f"[{get_timestamp()}] TTSManager: Pygame mixer initialized")
         except Exception as e:
-            self.error.emit(str(e))
-        finally:
-            if engine:
+            print(f"[{get_timestamp()}] TTSManager: Failed to initialize pygame mixer: {e}")
+            return
+
+        while self.is_running:
+            if self.queue:
+                # Get next request from queue
+                request = self.queue.pop(0)
+                text = request['text']
+                slow = request['slow']
+                volume = request['volume']
+                voice_id = request['voice_id']
+                message_type = request['message_type']
+
+                speed_str = "slow" if slow else "normal"
+                print(f"[{get_timestamp()}] TTSManager: Processing '{text[:50]}...' (speed: {speed_str}, volume: {volume})")
+
                 try:
-                    engine.stop()
-                except:
-                    pass
+                    # Map voice_id to gTTS TLD for different accents
+                    tld_map = {
+                        'en-us': 'com',      # US English
+                        'en-uk': 'co.uk',    # UK English
+                        'en-au': 'com.au',   # Australian English
+                        'en-in': 'co.in',    # Indian English
+                        'en-ca': 'ca',       # Canadian English
+                        'en-za': 'co.za',    # South African English
+                        'en-ie': 'ie',       # Irish English
+                        'en-ng': 'com.ng',   # Nigerian English
+                    }
+                    tld = tld_map.get(voice_id, 'com')  # Default to US English
+
+                    # Generate speech using gTTS with timeout
+                    print(f"[{get_timestamp()}] TTSManager: Generating speech with gTTS (accent: {voice_id or 'en-us'}, slow: {slow})")
+                    tts = gTTS(text=text, lang='en', tld=tld, slow=slow, timeout=3)
+
+                    # Write to BytesIO instead of temp file (more efficient)
+                    # This makes the actual API call to Google
+                    audio_fp = BytesIO()
+                    tts.write_to_fp(audio_fp)
+                    audio_fp.seek(0)
+                    print(f"[{get_timestamp()}] TTSManager: Audio generated in memory")
+
+                    # Play audio using pygame
+                    print(f"[{get_timestamp()}] TTSManager: Playing audio")
+                    pygame.mixer.music.load(audio_fp)
+                    pygame.mixer.music.set_volume(volume)
+                    pygame.mixer.music.play()
+
+                    # Wait for playback to finish
+                    while pygame.mixer.music.get_busy():
+                        self.msleep(100)
+
+                    print(f"[{get_timestamp()}] TTSManager: Playback completed")
+
+                    # Emit completion signal
+                    self.tts_completed.emit(message_type)
+
+                except Exception as e:
+                    # Check if it's a timeout error
+                    error_type = type(e).__name__
+                    if 'timeout' in str(e).lower() or error_type in ['Timeout', 'ConnectTimeout', 'ReadTimeout']:
+                        error_msg = f"TTS timeout after 3 seconds - Google TTS API not responding"
+                        print(f"[{get_timestamp()}] TTSManager: {error_msg}")
+                    else:
+                        error_msg = f"TTS error ({error_type}): {e}"
+                        print(f"[{get_timestamp()}] TTSManager: {error_msg}")
+
+                    self.tts_error.emit(error_msg)
+
+                finally:
+                    # Small delay between messages
+                    self.msleep(200)
+
+            else:
+                # Sleep briefly when queue is empty
+                self.msleep(100)
+
+        # Clean up pygame mixer
+        try:
+            pygame.mixer.quit()
+        except:
+            pass
+
+        print(f"[{get_timestamp()}] TTSManager: Queue processor stopped")
 
 # Worker class to handle redis operations in background
 class RedisWorker(QObject):
@@ -3916,7 +4004,18 @@ class BusylightApp(QMainWindow):
 
         # Flag to prevent TTS during app initialization
         self.is_initializing = True
-        
+
+        # Initialize TTS manager
+        self.tts_manager = TTSManager(self)
+        self.tts_manager.tts_completed.connect(
+            lambda msg_type: self.add_log(f"[{get_timestamp()}] TTS completed: {msg_type}")
+        )
+        self.tts_manager.tts_error.connect(
+            lambda err: self.add_log(f"[{get_timestamp()}] TTS error: {err}")
+        )
+        self.tts_manager.start()
+        self.add_log(f"[{get_timestamp()}] TTS Manager started")
+
         # Setup window title and icon
         self.setWindowTitle("Busylight Controller")
         icon_path = get_resource_path("icon.png")
@@ -3986,6 +4085,8 @@ class BusylightApp(QMainWindow):
 
         # Create main tab widget
         self.main_tab_widget = QTabWidget()
+        # Prevent tabs from expanding to fill space (keeps them left-aligned)
+        self.main_tab_widget.tabBar().setExpanding(False)
         self.main_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
                 border: 1px solid {colors['border_secondary']};
@@ -4439,6 +4540,9 @@ class BusylightApp(QMainWindow):
 
         tts_group.setStyleSheet(group_style)
         tts_layout = QFormLayout(tts_group)
+        tts_layout.setLabelAlignment(Qt.AlignLeft)
+        tts_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        tts_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         tts_layout.setSpacing(12)
 
         # TTS Enabled checkbox
@@ -4447,24 +4551,13 @@ class BusylightApp(QMainWindow):
         self.tts_enabled_checkbox_settings.setChecked(settings.value("tts/enabled", False, type=bool))
         tts_layout.addRow("Enable TTS:", self.tts_enabled_checkbox_settings)
 
-        # TTS Rate spinbox
-        self.tts_rate_label_settings = QLabel("Speech Rate:")
+        # TTS Slow checkbox
+        self.tts_rate_label_settings = QLabel("Slow Speech:")
         self.tts_rate_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
-        self.tts_rate_spinbox_settings = QSpinBox()
-        self.tts_rate_spinbox_settings.setRange(50, 300)
-        self.tts_rate_spinbox_settings.setValue(settings.value("tts/rate", 150, type=int))
-        self.tts_rate_spinbox_settings.setSuffix(" WPM")
-        self.tts_rate_spinbox_settings.setStyleSheet(f"""
-            QSpinBox {{
-                padding: 8px 12px;
-                border: 1px solid {colors['input_border']};
-                border-radius: 8px;
-                background: {colors['input_bg']};
-                font-size: 13px;
-                color: {colors['text_secondary']};
-            }}
-        """)
-        tts_layout.addRow(self.tts_rate_label_settings, self.tts_rate_spinbox_settings)
+        self.tts_slow_checkbox_settings = QCheckBox()
+        self.tts_slow_checkbox_settings.setChecked(settings.value("tts/slow", False, type=bool))
+        self.tts_slow_checkbox_settings.setStyleSheet(checkbox_style)
+        tts_layout.addRow(self.tts_rate_label_settings, self.tts_slow_checkbox_settings)
 
         # TTS Volume slider
         self.tts_volume_label_settings = QLabel("Volume:")
@@ -4567,7 +4660,7 @@ class BusylightApp(QMainWindow):
 
         # Store TTS widgets for show/hide in settings dialog
         self.tts_settings_widgets = [
-            self.tts_rate_label_settings, self.tts_rate_spinbox_settings,
+            self.tts_rate_label_settings, self.tts_slow_checkbox_settings,
             self.tts_volume_label_settings, self.tts_volume_slider_settings,
             self.tts_voice_label_settings, self.tts_voice_combo_settings,
             self.tts_test_text_label_settings, self.tts_test_text_input_settings,
@@ -4587,6 +4680,9 @@ class BusylightApp(QMainWindow):
         url_group.setFont(bold_font)
         url_group.setStyleSheet(group_style)
         url_layout = QFormLayout(url_group)
+        url_layout.setLabelAlignment(Qt.AlignLeft)
+        url_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        url_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         url_layout.setSpacing(12)
 
         self.url_enabled_checkbox = QCheckBox()
@@ -4601,6 +4697,9 @@ class BusylightApp(QMainWindow):
         app_group.setFont(bold_font)
         app_group.setStyleSheet(group_style)
         app_layout = QFormLayout(app_group)
+        app_layout.setLabelAlignment(Qt.AlignLeft)
+        app_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        app_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         app_layout.setSpacing(12)
 
         self.start_minimized_checkbox = QCheckBox()
@@ -4821,20 +4920,16 @@ class BusylightApp(QMainWindow):
             test_message = custom_text if custom_text else "This is a test of the text to speech system"
 
             # Get current TTS settings from Settings dialog
-            rate = self.tts_rate_spinbox_settings.value()
+            slow = self.tts_slow_checkbox_settings.isChecked()
             volume = self.tts_volume_slider_settings.value() / 100.0
             voice_id = self.tts_voice_combo_settings.currentData()
 
-            # Create and start TTS test worker
-            self.tts_test_worker = TTSWorker(test_message, rate, volume, voice_id)
-            self.tts_test_worker.finished.connect(
-                lambda: self.add_log(f"[{get_timestamp()}] TTS test completed from Settings dialog")
-            )
-            self.tts_test_worker.error.connect(
-                lambda err: self.add_log(f"[{get_timestamp()}] TTS test error: {err}")
-            )
-            self.tts_test_worker.start()
-            self.add_log(f"[{get_timestamp()}] TTS test started from Settings dialog")
+            # Add to TTS queue for testing
+            if hasattr(self, 'tts_manager') and self.tts_manager:
+                self.tts_manager.add_to_queue(test_message, slow, volume, voice_id, "test")
+                self.add_log(f"[{get_timestamp()}] TTS test started from Settings dialog")
+            else:
+                self.add_log(f"[{get_timestamp()}] TTS manager not available")
 
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error testing TTS: {e}")
@@ -4853,8 +4948,8 @@ class BusylightApp(QMainWindow):
         # Save TTS settings (from Settings dialog widgets)
         if hasattr(self, 'tts_enabled_checkbox_settings'):
             settings.setValue("tts/enabled", self.tts_enabled_checkbox_settings.isChecked())
-        if hasattr(self, 'tts_rate_spinbox_settings'):
-            settings.setValue("tts/rate", self.tts_rate_spinbox_settings.value())
+        if hasattr(self, 'tts_slow_checkbox_settings'):
+            settings.setValue("tts/slow", self.tts_slow_checkbox_settings.isChecked())
         if hasattr(self, 'tts_volume_slider_settings'):
             settings.setValue("tts/volume", self.tts_volume_slider_settings.value() / 100.0)
         if hasattr(self, 'tts_voice_combo_settings'):
@@ -4963,6 +5058,17 @@ class BusylightApp(QMainWindow):
                         print(f"[{get_timestamp()}] Stopped analytics thread")
                 except Exception as e:
                     print(f"[{get_timestamp()}] Error stopping analytics thread: {e}")
+
+            # Stop the TTS manager thread
+            if hasattr(self, 'tts_manager') and self.tts_manager:
+                try:
+                    self.tts_manager.stop()
+                    if not self.tts_manager.wait(2000):
+                        self.tts_manager.terminate()
+                        self.tts_manager.wait(500)
+                    print(f"[{get_timestamp()}] Stopped TTS manager")
+                except Exception as e:
+                    print(f"[{get_timestamp()}] Error stopping TTS manager: {e}")
 
             # Stop the worker thread safely
             if hasattr(self, 'redis_worker') and self.redis_worker:
@@ -5278,20 +5384,13 @@ class BusylightApp(QMainWindow):
             return
 
         # Get TTS configuration
-        rate = settings.value("tts/rate", 150, type=int)
+        slow = settings.value("tts/slow", False, type=bool)
         volume = settings.value("tts/volume", 0.9, type=float)
         voice_id = settings.value("tts/voice_id", None)
 
-        # Create and start TTS worker thread
-        self.tts_worker = TTSWorker(summary, rate, volume, voice_id)
-        self.tts_worker.finished.connect(
-            lambda: self.add_log(f"[{get_timestamp()}] TTS completed: ticket summary")
-        )
-        self.tts_worker.error.connect(
-            lambda err: self.add_log(f"[{get_timestamp()}] TTS error: {err}")
-        )
-        self.tts_worker.start()
-        self.add_log(f"[{get_timestamp()}] Speaking ticket summary using pyttsx3")
+        # Add to TTS queue
+        self.tts_manager.add_to_queue(summary, slow, volume, voice_id, "ticket summary")
+        self.add_log(f"[{get_timestamp()}] Ticket summary added to TTS queue")
     
     def speak_group_status_event(self, group, status, data):
         """Speak group status events using pyttsx3"""
@@ -5318,20 +5417,18 @@ class BusylightApp(QMainWindow):
             tts_message = f"Group {group} status changed to {status_name} by {source}"
 
         # Get TTS configuration
-        rate = settings.value("tts/rate", 150, type=int)
+        slow = settings.value("tts/slow", False, type=bool)
         volume = settings.value("tts/volume", 0.9, type=float)
         voice_id = settings.value("tts/voice_id", None)
 
-        # Create and start TTS worker thread
-        self.tts_worker = TTSWorker(tts_message, rate, volume, voice_id)
-        self.tts_worker.finished.connect(
-            lambda: self.add_log(f"[{get_timestamp()}] TTS completed: group status event")
-        )
-        self.tts_worker.error.connect(
-            lambda err: self.add_log(f"[{get_timestamp()}] TTS error: {err}")
-        )
-        self.tts_worker.start()
-        self.add_log(f"[{get_timestamp()}] Speaking group status event using pyttsx3")
+        # Debug logging to see what's being spoken
+        speed_str = "slow" if slow else "normal"
+        self.add_log(f"[{get_timestamp()}] TTS Message: '{tts_message}' (length: {len(tts_message)})")
+        self.add_log(f"[{get_timestamp()}] TTS Params - speed: {speed_str}, volume: {volume}, voice: {voice_id}")
+
+        # Add to TTS queue
+        self.tts_manager.add_to_queue(tts_message, slow, volume, voice_id, "group status event")
+        self.add_log(f"[{get_timestamp()}] Group status event added to TTS queue")
     
     def open_ticket_url(self, url):
         """Open the ticket URL using a secure method"""
