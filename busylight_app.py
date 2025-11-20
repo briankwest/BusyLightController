@@ -278,7 +278,10 @@ class LoginDialog(QDialog):
         
         # Form layout for credentials
         form_layout = QFormLayout()
-        
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
         # Username input
         self.username_input = QLineEdit()
         #self.username_input.setPlaceholderText("Enter your username")
@@ -482,10 +485,13 @@ class ConfigDialog(QDialog):
                 font-size: 16px;
             }}
         """)
-        
+
         tts_layout = QFormLayout(tts_group)
+        tts_layout.setLabelAlignment(Qt.AlignLeft)
+        tts_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        tts_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         tts_layout.setSpacing(12)
-        
+
         self.tts_enabled_checkbox = QCheckBox()
         self.tts_enabled_checkbox.setStyleSheet(f"""
             QCheckBox {{
@@ -667,8 +673,12 @@ class ConfigDialog(QDialog):
         """)
         
         url_layout = QFormLayout(url_group)
+        url_layout.setLabelAlignment(Qt.AlignLeft)
+        url_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        url_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         url_layout.setSpacing(12)
-        
+
+
         self.url_enabled_checkbox = QCheckBox()
         self.url_enabled_checkbox.setStyleSheet(f"""
             QCheckBox {{
@@ -768,6 +778,9 @@ class ConfigDialog(QDialog):
         """)
         
         general_layout = QFormLayout(general_group)
+        general_layout.setLabelAlignment(Qt.AlignLeft)
+        general_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        general_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         general_layout.setSpacing(12)
         
         # Common checkbox style
@@ -1352,11 +1365,11 @@ class StatusChangeDialog(QDialog):
         
         # Form layout for controls
         form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form_layout.setSpacing(12)
-        
-        # Style form labels
-        form_layout.setLabelAlignment(Qt.AlignRight)
-        
+
         # Actions dropdown
         self.action_combo = QComboBox()
         self.action_combo.addItem("Normal", "normal")
@@ -3986,6 +3999,8 @@ class BusylightApp(QMainWindow):
 
         # Create main tab widget
         self.main_tab_widget = QTabWidget()
+        # Prevent tabs from expanding to fill space (keeps them left-aligned)
+        self.main_tab_widget.tabBar().setExpanding(False)
         self.main_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
                 border: 1px solid {colors['border_secondary']};
@@ -4439,6 +4454,9 @@ class BusylightApp(QMainWindow):
 
         tts_group.setStyleSheet(group_style)
         tts_layout = QFormLayout(tts_group)
+        tts_layout.setLabelAlignment(Qt.AlignLeft)
+        tts_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        tts_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         tts_layout.setSpacing(12)
 
         # TTS Enabled checkbox
@@ -4587,6 +4605,9 @@ class BusylightApp(QMainWindow):
         url_group.setFont(bold_font)
         url_group.setStyleSheet(group_style)
         url_layout = QFormLayout(url_group)
+        url_layout.setLabelAlignment(Qt.AlignLeft)
+        url_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        url_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         url_layout.setSpacing(12)
 
         self.url_enabled_checkbox = QCheckBox()
@@ -4601,6 +4622,9 @@ class BusylightApp(QMainWindow):
         app_group.setFont(bold_font)
         app_group.setStyleSheet(group_style)
         app_layout = QFormLayout(app_group)
+        app_layout.setLabelAlignment(Qt.AlignLeft)
+        app_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        app_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         app_layout.setSpacing(12)
 
         self.start_minimized_checkbox = QCheckBox()
