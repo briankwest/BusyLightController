@@ -22,12 +22,15 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout,
                             QSplitter, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
-from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen
+from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import QSpinBox, QSlider
 import webbrowser
 from gtts import gTTS
 import pygame
 from io import BytesIO
+import logging
+import logging.handlers
+from pathlib import Path
 
 # Application version - increment this with each code change
 APP_VERSION = "1.1.2"
@@ -141,6 +144,190 @@ def get_available_english_voices():
         {'id': 'en-ie', 'name': 'English (Ireland)'},
         {'id': 'en-ng', 'name': 'English (Nigeria)'},
     ]
+
+def get_log_directory():
+    """Get platform-specific log directory and ensure it exists"""
+    system = platform.system()
+
+    if system == "Darwin":  # macOS
+        log_dir = Path.home() / "Library" / "Logs" / "Busylight"
+    elif system == "Windows":
+        log_dir = Path(os.getenv("APPDATA")) / "Busylight" / "Logs"
+    else:  # Linux and others
+        log_dir = Path.home() / ".local" / "share" / "Busylight" / "logs"
+
+    # Create directory if it doesn't exist
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+def get_log_file_path():
+    """Get the full path to the log file"""
+    return get_log_directory() / "BusylightController.log"
+
+class QtLogHandler(logging.Handler):
+    """Custom log handler that emits Qt signals for UI updates"""
+
+    def __init__(self):
+        super().__init__()
+        self.signal_emitter = None
+
+    def set_signal_emitter(self, emitter):
+        """Set the signal emitter (must be called from main thread)"""
+        self.signal_emitter = emitter
+
+    def emit(self, record):
+        """Emit log record to Qt signal"""
+        if self.signal_emitter:
+            try:
+                msg = self.format(record)
+                level_name = record.levelname
+                self.signal_emitter.log_message.emit(msg, level_name)
+            except Exception:
+                self.handleError(record)
+
+class LogSignalEmitter(QObject):
+    """QObject for emitting log signals"""
+    log_message = pyqtSignal(str, str)  # message, level
+
+class LogWidget(QTextEdit):
+    """Custom QTextEdit widget for displaying color-coded logs"""
+
+    MAX_LINES = 1000  # Maximum lines to keep in memory
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setLineWrapMode(QTextEdit.NoWrap)
+        self.line_count = 0
+
+        # Enable rich text for color-coded logs
+        self.setAcceptRichText(True)
+
+    def add_log_message(self, message, level):
+        """Add a color-coded log message to the widget"""
+        # Get color based on log level
+        color = self.get_level_color(level)
+
+        # Create HTML formatted message
+        html_message = f'<span style="color: {color};">{self.escape_html(message)}</span><br>'
+
+        # Append to widget
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(html_message)
+
+        # Increment line count
+        self.line_count += 1
+
+        # Trim if we exceed max lines
+        if self.line_count > self.MAX_LINES:
+            self.trim_to_max_lines()
+
+        # Auto-scroll to bottom
+        scrollbar = self.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def get_level_color(self, level):
+        """Get color for log level based on dark/light mode"""
+        dark_mode = is_dark_mode()
+
+        colors = {
+            'DEBUG': '#888888' if dark_mode else '#6c757d',
+            'INFO': '#ffffff' if dark_mode else '#202124',
+            'WARNING': '#ffa726' if dark_mode else '#ff9800',
+            'ERROR': '#ef5350' if dark_mode else '#dc3545',
+        }
+
+        return colors.get(level, '#ffffff' if dark_mode else '#202124')
+
+    def escape_html(self, text):
+        """Escape HTML special characters"""
+        return (text
+                .replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+                .replace('"', '&quot;')
+                .replace("'", '&#39;'))
+
+    def trim_to_max_lines(self):
+        """Remove oldest lines to keep within MAX_LINES limit"""
+        # Get all text
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+
+        # Count lines and remove excess from top
+        lines_to_remove = self.line_count - self.MAX_LINES
+
+        for _ in range(lines_to_remove):
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # Remove the newline
+
+        self.line_count = self.MAX_LINES
+
+    def clear_logs(self):
+        """Clear all logs from the widget"""
+        self.clear()
+        self.line_count = 0
+
+    def get_all_text(self):
+        """Get all log text (plain text, no HTML)"""
+        return self.toPlainText()
+
+# Global log handler and emitter
+_qt_log_handler = None
+_log_signal_emitter = None
+
+def setup_logging():
+    """Configure application logging with rotating file handler"""
+    global _qt_log_handler, _log_signal_emitter
+
+    # Create logger
+    logger = logging.getLogger("BusylightController")
+    logger.setLevel(logging.DEBUG)
+
+    # Clear any existing handlers
+    logger.handlers.clear()
+
+    # Create rotating file handler (5MB max, 1 backup)
+    log_file = get_log_file_path()
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,  # 5MB
+        backupCount=1,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+
+    # Add file handler
+    logger.addHandler(file_handler)
+
+    # Create Qt handler for UI updates
+    _qt_log_handler = QtLogHandler()
+    _qt_log_handler.setLevel(logging.DEBUG)
+    _qt_log_handler.setFormatter(formatter)
+    logger.addHandler(_qt_log_handler)
+
+    # Create signal emitter
+    _log_signal_emitter = LogSignalEmitter()
+    _qt_log_handler.set_signal_emitter(_log_signal_emitter)
+
+    # Log startup info
+    logger.info(f"BusylightController v{APP_VERSION} starting on {platform.system()} {platform.release()}")
+    logger.info(f"Log file: {log_file}")
+
+    return logger, _log_signal_emitter
+
+def get_logger():
+    """Get the application logger"""
+    return logging.getLogger("BusylightController")
 
 # Login dialog class
 class LoginDialog(QDialog):
@@ -4002,6 +4189,13 @@ class BusylightApp(QMainWindow):
         # Initialize settings
         self.settings = QSettings("Busylight", "BusylightController")
 
+        # Initialize logging system
+        logger, log_signal_emitter = setup_logging()
+        self.log_signal_emitter = log_signal_emitter
+
+        # Connect log signal to UI handler
+        self.log_signal_emitter.log_message.connect(self.on_log_message_received)
+
         # Flag to prevent TTS during app initialization
         self.is_initializing = True
 
@@ -4087,6 +4281,9 @@ class BusylightApp(QMainWindow):
         self.main_tab_widget = QTabWidget()
         # Prevent tabs from expanding to fill space (keeps them left-aligned)
         self.main_tab_widget.tabBar().setExpanding(False)
+
+        # Connect tab change signal for logging
+        self.main_tab_widget.currentChanged.connect(self.on_tab_changed)
         self.main_tab_widget.setStyleSheet(f"""
             QTabWidget::pane {{
                 border: 1px solid {colors['border_secondary']};
@@ -4116,6 +4313,7 @@ class BusylightApp(QMainWindow):
         self.create_status_monitor_tab(colors)
         self.create_analytics_tab(colors)
         self.create_configuration_tab(colors)
+        self.create_activity_log_tab(colors)
 
         # Add help button to tab bar corner with proper spacing
         help_container = QWidget()
@@ -4762,7 +4960,138 @@ class BusylightApp(QMainWindow):
             analytics_layout.addWidget(placeholder)
 
         self.main_tab_widget.addTab(analytics_tab, "Analytics")
-        
+
+    def create_activity_log_tab(self, colors):
+        """Create the Activity Log tab with log display and controls"""
+        log_tab = QWidget()
+        log_layout = QVBoxLayout(log_tab)
+        log_layout.setSpacing(12)
+        log_layout.setContentsMargins(16, 16, 16, 16)
+
+        # Create control bar at top
+        control_bar = QWidget()
+        control_layout = QHBoxLayout(control_bar)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(12)
+
+        # Add title label
+        title_label = QLabel("Application Activity Log")
+        title_label.setStyleSheet(f"""
+            font-size: 18px;
+            font-weight: bold;
+            color: {colors['text_primary']};
+        """)
+        control_layout.addWidget(title_label)
+
+        control_layout.addStretch()
+
+        # Add log level filter
+        filter_label = QLabel("Show:")
+        filter_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 13px;")
+        control_layout.addWidget(filter_label)
+
+        self.log_level_filter = QComboBox()
+        self.log_level_filter.addItems(["All", "INFO+", "WARNING+", "ERROR"])
+        self.log_level_filter.setCurrentIndex(0)
+        self.log_level_filter.currentTextChanged.connect(self.apply_log_filter)
+        self.log_level_filter.setStyleSheet(f"""
+            QComboBox {{
+                background: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: {colors['text_primary']};
+                font-size: 13px;
+                min-width: 100px;
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid {colors['text_secondary']};
+                margin-right: 4px;
+            }}
+        """)
+        control_layout.addWidget(self.log_level_filter)
+
+        # Add Copy button
+        copy_button = QPushButton("Copy to Clipboard")
+        copy_button.clicked.connect(self.copy_logs_to_clipboard)
+        copy_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        control_layout.addWidget(copy_button)
+
+        # Add Clear button
+        clear_button = QPushButton("Clear Log")
+        clear_button.clicked.connect(self.clear_activity_log)
+        clear_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_red']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        control_layout.addWidget(clear_button)
+
+        log_layout.addWidget(control_bar)
+
+        # Create log widget
+        self.log_widget = LogWidget()
+        self.log_widget.setStyleSheet(f"""
+            QTextEdit {{
+                background: {colors['input_bg']};
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                padding: 12px;
+                color: {colors['text_secondary']};
+                font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+                font-size: 11px;
+                line-height: 1.4;
+            }}
+        """)
+        log_layout.addWidget(self.log_widget)
+
+        # Add info footer
+        info_label = QLabel(f"Logs are stored at: {get_log_file_path()} (max 5MB, auto-rotated)")
+        info_label.setStyleSheet(f"""
+            color: {colors['text_muted']};
+            font-size: 11px;
+            font-style: italic;
+            padding: 4px;
+        """)
+        info_label.setWordWrap(True)
+        log_layout.addWidget(info_label)
+
+        self.main_tab_widget.addTab(log_tab, "Activity Log")
+
     def setup_tray(self):
         # Create system tray icon
         self.tray_icon = QSystemTrayIcon(self)
@@ -4860,6 +5189,8 @@ class BusylightApp(QMainWindow):
 
     def show_custom_status_dialog(self):
         """Show the custom status update dialog"""
+        logger = get_logger()
+        logger.debug("User opened Custom Status Update dialog")
         dialog = CustomStatusDialog(parent=self)
         dialog.exec()
 
@@ -5005,18 +5336,128 @@ class BusylightApp(QMainWindow):
         # Update the tray icon
         self.update_tray_icon(status)
     
-    def add_log(self, message):
-        """Add a message to the log if the UI has been created"""
-        if not hasattr(self, 'log_text') or self.log_text is None:
-            # Just print to console if the UI hasn't been created yet or log widget was removed
-            print(message)
+    def add_log(self, message, level="INFO"):
+        """Add a message to the log using Python logging
+
+        Args:
+            message: The message to log
+            level: Log level (DEBUG, INFO, WARNING, ERROR) - default is INFO
+        """
+        logger = get_logger()
+
+        # Strip timestamp if it's already in the message (for backward compatibility)
+        # Old format: [YYYY-MM-DD HH:MM:SS] message
+        if message.startswith('[') and '] ' in message[:25]:
+            message = message[message.index('] ')+2:]
+
+        # Log at the appropriate level
+        level = level.upper()
+        if level == "DEBUG":
+            logger.debug(message)
+        elif level == "WARNING" or level == "WARN":
+            logger.warning(message)
+        elif level == "ERROR":
+            logger.error(message)
+        else:
+            logger.info(message)
+
+    def on_log_message_received(self, message, level):
+        """Handle log messages from the logging system and display in UI"""
+        if hasattr(self, 'log_widget') and self.log_widget:
+            # Check if message should be filtered based on current filter setting
+            if self.should_show_log(level):
+                self.log_widget.add_log_message(message, level)
+
+    def should_show_log(self, level):
+        """Check if log message should be displayed based on current filter"""
+        if not hasattr(self, 'log_level_filter'):
+            return True
+
+        filter_value = self.log_level_filter.currentText()
+
+        if filter_value == "All":
+            return True
+        elif filter_value == "INFO+":
+            return level in ["INFO", "WARNING", "ERROR"]
+        elif filter_value == "WARNING+":
+            return level in ["WARNING", "ERROR"]
+        elif filter_value == "ERROR":
+            return level == "ERROR"
+
+        return True
+
+    def apply_log_filter(self):
+        """Reload all logs from file with current filter applied"""
+        if not hasattr(self, 'log_widget'):
             return
-            
-        self.log_text.append(message)
-        # Auto scroll to bottom
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-    
+
+        # Clear current display
+        self.log_widget.clear_logs()
+
+        # Re-read log file and apply filter
+        try:
+            log_file = get_log_file_path()
+            if log_file.exists():
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    # Read last 1000 lines
+                    lines = f.readlines()[-1000:]
+                    for line in lines:
+                        # Parse line to extract level
+                        # Format: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
+                        if '[' in line and ']' in line:
+                            parts = line.split(']', 2)
+                            if len(parts) >= 3:
+                                level_part = parts[1].strip().strip('[')
+                                if self.should_show_log(level_part):
+                                    # Re-add with original formatting
+                                    self.log_widget.add_log_message(line.rstrip('\n'), level_part)
+        except Exception as e:
+            self.log_widget.add_log_message(f"[{get_timestamp()}] [ERROR] Failed to reload logs: {e}", "ERROR")
+
+    def copy_logs_to_clipboard(self):
+        """Copy all visible logs to clipboard"""
+        if not hasattr(self, 'log_widget'):
+            return
+
+        log_text = self.log_widget.get_all_text()
+        if log_text:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(log_text)
+
+            # Show temporary message
+            logger = get_logger()
+            logger.info(f"Copied {len(log_text.splitlines())} log lines to clipboard")
+
+    def clear_activity_log(self):
+        """Clear the activity log display and truncate log file"""
+        if not hasattr(self, 'log_widget'):
+            return
+
+        # Clear UI
+        self.log_widget.clear_logs()
+
+        # Truncate log file
+        try:
+            log_file = get_log_file_path()
+            with open(log_file, 'w', encoding='utf-8') as f:
+                f.write('')
+
+            # Log the clear action
+            logger = get_logger()
+            logger.info("Activity log cleared by user")
+        except Exception as e:
+            logger = get_logger()
+            logger.error(f"Failed to clear log file: {e}")
+
+    def on_tab_changed(self, index):
+        """Log when user switches tabs"""
+        if not hasattr(self, 'main_tab_widget'):
+            return
+
+        tab_name = self.main_tab_widget.tabText(index)
+        logger = get_logger()
+        logger.debug(f"User switched to tab: {tab_name}")
+
     def on_exit(self):
         """Safely shut down the application and clean up resources"""
         # Prevent recursive calls
