@@ -17,7 +17,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 APP_NAME = "BLASST Controller"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.4"
 ICON_FILE = "icon.png"
 MAIN_SCRIPT = "busylight_app_main.py"
 COMPANY_NAME = "SignalWire"
@@ -113,19 +113,40 @@ def build_executable():
     main_script = validate_file(MAIN_SCRIPT, "Main script")
     ico_file = create_ico()
     icon_option = f", icon='{ico_file}'" if ico_file else ""
-    
+
     # Use basename and absolute directory path with forward slashes
     script_basename = os.path.basename(main_script)
     script_dir = os.path.abspath(os.path.dirname(main_script)).replace('\\', '/')
-    
+
     spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
+
+# Collect modules
+datas = []
+binaries = []
+hiddenimports = []
+tmp_ret = collect_all('PySide6')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('busylight')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# Add resource files
+datas += [('{ICON_FILE}', '.'), ('sw.jpeg', '.')]
+
+# Add additional hidden imports
+hiddenimports += ['webbrowser', 'usb', 'hid', 'pyusb', 'redis', 'charset_normalizer',
+                  'importlib_metadata', 'certifi', 'dotenv', 'pygame', 'pygame.mixer',
+                  'busylight.lights.kuando._busylight', 'busylight.lights.Busylight_Omega',
+                  'busylight.lights.Light']
+
 a = Analysis(
     ['{script_basename}'],
     pathex=['{script_dir}'],
-    binaries=[],
-    datas=[('{ICON_FILE}', '.'), ('sw.jpeg', '.')],
-    hiddenimports=['webbrowser', 'usb', 'hid', 'pyusb', 'busylight_for_humans', 'PySide6', 'redis', 'charset_normalizer', 'importlib_metadata', 'certifi'],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],

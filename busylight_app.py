@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
                             QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout,
-                            QSplitter, QListWidget, QListWidgetItem)
+                            QSplitter, QListWidget, QListWidgetItem, QColorDialog)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen, QTextCursor, QBrush, QPolygon
 from PySide6.QtWidgets import QSpinBox, QSlider
@@ -33,7 +33,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.4"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -58,6 +58,7 @@ except ImportError:
     USE_OMEGA = False
 
 from busylight.lights.kuando._busylight import Ring, Instruction, CommandBuffer
+from busylight.speed import Speed
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -4420,7 +4421,27 @@ class LightController(QObject):
     RINGTONES = {
         'off': Ring.Off,
         'quiet': Ring.Quiet,
-        'funky': Ring.Funky
+        'funky': Ring.Funky,
+        'fairytale': Ring.FairyTale,
+        'kuandotrain': Ring.KuandoTrain,
+        'telephoneoriginal': Ring.TelephoneOriginal,
+        'telephonenordic': Ring.TelephoneNordic,
+        'telephonepickmeup': Ring.TelephonePickMeUp,
+        'openoffice': Ring.OpenOffice,
+        'buzz': Ring.Buzz
+    }
+
+    # User-friendly alert tone names for display
+    RINGTONE_NAMES = {
+        'quiet': 'Quiet',
+        'funky': 'Funky',
+        'fairytale': 'Fairy Tale',
+        'kuandotrain': 'Kuando Train',
+        'telephoneoriginal': 'Telephone (Original)',
+        'telephonenordic': 'Telephone (Nordic)',
+        'telephonepickmeup': 'Telephone (Pick Me Up)',
+        'openoffice': 'OpenOffice',
+        'buzz': 'Buzz'
     }
     
     def __init__(self, parent=None):
@@ -4451,7 +4472,11 @@ class LightController(QObject):
         # Initialize effect timer for blinking and other effects
         self.effect_timer = QTimer(self)
         self.effect_timer.timeout.connect(self.update_effect)
-        
+
+        # Initialize flash timer for alert flash completion
+        self.flash_completion_timer = None
+        self.flash_timer = None
+
         # Explicitly connect and emit initial device status
         QTimer.singleShot(0, self.try_connect_device)
         
@@ -4578,6 +4603,10 @@ class LightController(QObject):
     
     def set_status(self, status, log_action=False):
         """Set light status with optional logging and UI updates."""
+        # Cancel any active flash timer to prevent conflicts when status changes
+        if hasattr(self, 'flash_timer') and self.flash_timer and self.flash_timer.isActive():
+            self.flash_timer.stop()
+
         # Normalize status first
         if status not in self.COLOR_MAP:
             status = 'normal'
@@ -4605,64 +4634,198 @@ class LightController(QObject):
         # Set ringtone only if it's explicitly selected (not "off")
         ringtone = Ring.Off
         volume = 0
-        
+
         if self.current_ringtone != "off":
             ringtone = self.RINGTONES.get(self.current_ringtone, Ring.Off)
             volume = self.current_volume
-        
-        # Special case for alert status - only play sound if we haven't explicitly set a different ringtone
-        if status == 'alert' and self.current_ringtone == 'off':
-            ringtone = Ring.Funky
-            volume = 7
-        
-        try:
-            cmd_buffer = CommandBuffer()
 
-            # Create and send the instructions to the light
+        # Special case for alert status - use configured alert tone if enabled and no manual ringtone is set
+        # This ensures alerts play a sound if the user has enabled alert tones
+        if status == 'alert' and self.current_ringtone == 'off':
+            # Load settings to check if alert tones are enabled
+            settings = QSettings("Busylight", "BusylightController")
+            alert_tone_enabled = settings.value("busylight/alert_tone_enabled", True, type=bool)
+
+            if alert_tone_enabled:
+                # Load the configured alert tone and volume from settings
+                configured_ringtone = settings.value("busylight/ringtone", "funky")
+                ringtone = self.RINGTONES.get(configured_ringtone, Ring.Funky)
+                volume = settings.value("busylight/volume", 7, type=int)
+            else:
+                # Alert tones disabled, use Ring.Off
+                ringtone = Ring.Off
+                volume = 0
+
+            # Check if flash on alert is enabled
+            flash_enabled = settings.value("busylight/flash_enabled", False, type=bool)
+            if flash_enabled:
+                # Cancel any pending flash timer from previous alert
+                if self.flash_completion_timer and self.flash_completion_timer.isActive():
+                    self.flash_completion_timer.stop()
+
+                # Load flash settings
+                flash_speed = settings.value("busylight/flash_speed", "medium")
+                flash_count = settings.value("busylight/flash_count", 3, type=int)
+                flash_color_hex = settings.value("busylight/flash_color", "#FFFFFF")
+
+                # Convert hex color to RGB tuple
+                flash_color = QColor(flash_color_hex)
+                flash_rgb = (flash_color.red(), flash_color.green(), flash_color.blue())
+
+                # Get speed interval
+                try:
+                    speed_obj = Speed(flash_speed)
+                    interval = speed_obj.duty_cycle
+                except ValueError:
+                    interval = 0.5  # Default to medium speed
+
+                if log_action:
+                    self.log_message.emit(f"[{get_timestamp()}] Flashing alert {flash_count} times")
+
+                # Use a simpler approach: manually toggle colors with QTimer
+                flash_state = {'current_flash': 0, 'showing_alert_color': True}
+
+                def toggle_flash():
+                    try:
+                        if flash_state['showing_alert_color']:
+                            # Switch to flash color
+                            self.light.on(flash_rgb)
+                            flash_state['showing_alert_color'] = False
+                        else:
+                            # Switch to alert color
+                            self.light.on(color)
+                            flash_state['showing_alert_color'] = True
+                            flash_state['current_flash'] += 1
+
+                        # Check if we've completed all flashes
+                        if flash_state['current_flash'] >= flash_count:
+                            # Stop the flash timer
+                            if hasattr(self, 'flash_timer') and self.flash_timer:
+                                self.flash_timer.stop()
+
+                            # Set solid color with ringtone after a short delay
+                            def set_solid_with_ringtone():
+                                # Only set if still in alert status
+                                if self.current_status == 'alert':
+                                    try:
+                                        # Extract the actual ringtone ID from the Ring enum value
+                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
+                                        # Create instruction with color, ringtone, and volume
+                                        instruction = Instruction.Jump(
+                                            target=0,
+                                            color=color,
+                                            on_time=0,
+                                            off_time=0,
+                                            ringtone=ringtone_id,
+                                            volume=volume,
+                                            update=1,
+                                        )
+
+                                        # Write directly to the device
+                                        with self.light.batch_update():
+                                            self.light.color = color
+                                            self.light.command.line0 = instruction.value
+
+                                        # Add keepalive task
+                                        if hasattr(self.light, 'add_task'):
+                                            import asyncio
+                                            async def _keepalive(light, interval: int = 0xF) -> None:
+                                                interval = interval & 0x0F
+                                                sleep_interval = round(interval / 2)
+                                                from busylight.lights.kuando._busylight import Instruction as KInstruction
+                                                command = KInstruction.KeepAlive(interval).value
+                                                while True:
+                                                    with light.batch_update():
+                                                        light.command.line0 = command
+                                                    await asyncio.sleep(sleep_interval)
+
+                                            self.light.add_task("keepalive", _keepalive)
+                                    except Exception as e:
+                                        if log_action:
+                                            self.log_message.emit(f"[{get_timestamp()}] Error setting solid after flash: {e}")
+
+                            # Schedule solid color after flash completes
+                            self.flash_completion_timer = QTimer.singleShot(100, set_solid_with_ringtone)
+
+                    except Exception as e:
+                        if log_action:
+                            self.log_message.emit(f"[{get_timestamp()}] Error during flash: {e}")
+
+                # Create and start flash timer
+                self.flash_timer = QTimer(self)
+                self.flash_timer.timeout.connect(toggle_flash)
+                self.flash_timer.start(int(interval * 1000))  # Convert to milliseconds
+
+                # Start with the alert color immediately
+                try:
+                    self.light.on(color)
+                except Exception as e:
+                    if log_action:
+                        self.log_message.emit(f"[{get_timestamp()}] Error starting flash: {e}")
+
+                # Return early since flash is handling the light
+                return
+
+        try:
+            # Extract the actual ringtone ID from the Ring enum value
+            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
+            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
+            # Create instruction with color, ringtone, and volume all together
             instruction = Instruction.Jump(
-                ringtone=ringtone,
+                target=0,
+                color=color,
+                on_time=0,
+                off_time=0,
+                ringtone=ringtone_id,
                 volume=volume,
                 update=1,
             )
 
+            # Create command buffer and set the instruction
+            cmd_buffer = CommandBuffer()
             cmd_buffer.line0 = instruction.value
             command_bytes = bytes(cmd_buffer)
 
-            self.light.write_strategy(command_bytes)
-            
+            # Write directly to the device
+            with self.light.batch_update():
+                self.light.color = color
+                self.light.command.line0 = instruction.value
+
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
                 # Stop any running effect timer
                 if self.effect_timer.isActive():
                     self.effect_timer.stop()
-                # Just set the solid color
+                # For off status, we need to turn off the light
                 if status == "off":
                     self.light.off()
-                else:
-                    self.light.on(color)
+                # For solid color with no ringtone changes, the instruction above already set it
             elif self.current_effect == "blink":
-                # Try to use the light's native blink capability if available
-                if hasattr(self.light, 'blink'):
-                    try:
-                        # Stop any running effect timer
-                        if self.effect_timer.isActive():
-                            self.effect_timer.stop()
-                        # Use native blink functionality
-                        self.light.blink(color)
-                        self.log_message.emit(f"[{get_timestamp()}] Using light's native blink capability")
-                    except Exception as e:
-                        self.log_message.emit(f"[{get_timestamp()}] Error using native blink: {e}. Falling back to timer-based blink.")
-                        # Fall back to timer blink
-                        self.light.on(color)
-                        if not self.effect_timer.isActive():
-                            self.effect_timer.start(500)  # Blink every 500ms
-                else:
-                    # Use timer-based blinking
-                    self.light.on(color)
-                    if not self.effect_timer.isActive():
-                        self.effect_timer.start(500)  # Blink every 500ms
-                
-            self.light.update()
+                # For blinking, use timer-based approach to preserve ringtone
+                # Native blink would overwrite our ringtone instruction
+                if not self.effect_timer.isActive():
+                    self.effect_timer.start(500)  # Blink every 500ms
+
+            # Add keepalive task for Kuando lights
+            if hasattr(self.light, 'add_task'):
+                # Import keepalive function if available
+                try:
+                    import asyncio
+                    async def _keepalive(light, interval: int = 0xF) -> None:
+                        interval = interval & 0x0F
+                        sleep_interval = round(interval / 2)
+                        from busylight.lights.kuando._busylight import Instruction as KInstruction
+                        command = KInstruction.KeepAlive(interval).value
+                        while True:
+                            with light.batch_update():
+                                light.command.line0 = command
+                            await asyncio.sleep(sleep_interval)
+
+                    self.light.add_task("keepalive", _keepalive)
+                except Exception:
+                    pass  # Keepalive not available, that's okay
         except Exception as e:
             if log_action:
                 self.log_message.emit(f"[{get_timestamp()}] Error controlling light: {e}")
@@ -4777,7 +4940,10 @@ class BusylightApp(QMainWindow):
         
         # Initialize the light controller first
         self.light_controller = LightController(self)
-        
+
+        # Note: current_ringtone stays as "off" by default
+        # The configured alert ringtone is loaded from settings only when an alert occurs
+
         # Create the main UI
         self.create_main_ui()
         
@@ -5439,6 +5605,294 @@ class BusylightApp(QMainWindow):
 
         layout.addWidget(url_group)
 
+        # Busylight Configuration Group
+        busylight_group = QGroupBox("Busylight Alert Tone Configuration")
+        busylight_group.setFont(bold_font)
+        busylight_group.setStyleSheet(group_style)
+        busylight_layout = QFormLayout(busylight_group)
+        busylight_layout.setLabelAlignment(Qt.AlignLeft)
+        busylight_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        busylight_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        busylight_layout.setSpacing(12)
+
+        # Alert Tone Enabled checkbox
+        self.alert_tone_enabled_checkbox_settings = QCheckBox()
+        self.alert_tone_enabled_checkbox_settings.setStyleSheet(checkbox_style)
+        self.alert_tone_enabled_checkbox_settings.setChecked(settings.value("busylight/alert_tone_enabled", True, type=bool))
+        busylight_layout.addRow("Enable Alert Tone:", self.alert_tone_enabled_checkbox_settings)
+
+        # Alert Tone dropdown
+        self.ringtone_label_settings = QLabel("Alert Tone:")
+        self.ringtone_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.ringtone_combo_settings = QComboBox()
+        self.ringtone_combo_settings.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid {colors['text_secondary']};
+                margin-right: 4px;
+            }}
+        """)
+
+        # Populate ringtones using the RINGTONE_NAMES from LightController
+        saved_ringtone = settings.value("busylight/ringtone", "funky")
+        selected_index = 0
+
+        for idx, (ringtone_key, ringtone_name) in enumerate(LightController.RINGTONE_NAMES.items()):
+            self.ringtone_combo_settings.addItem(ringtone_name, ringtone_key)
+            if ringtone_key == saved_ringtone:
+                selected_index = idx
+
+        self.ringtone_combo_settings.setCurrentIndex(selected_index)
+        self.ringtone_combo_settings.setToolTip("Select the alert tone to play when an alert status is triggered")
+
+        busylight_layout.addRow(self.ringtone_label_settings, self.ringtone_combo_settings)
+
+        # Alert Tone Volume slider
+        self.ringtone_volume_label_settings = QLabel("Volume:")
+        self.ringtone_volume_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.ringtone_volume_slider_settings = QSlider(Qt.Horizontal)
+        self.ringtone_volume_slider_settings.setRange(0, 7)  # Volume is 3-bit: 0-7
+        self.ringtone_volume_slider_settings.setValue(settings.value("busylight/volume", 7, type=int))
+        self.ringtone_volume_slider_settings.setToolTip("Set the alert tone volume (0-7)")
+        self.ringtone_volume_slider_settings.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {colors['input_border']};
+                height: 8px;
+                background: {colors['input_bg']};
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors['accent_blue']};
+                border: none;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+        """)
+        busylight_layout.addRow(self.ringtone_volume_label_settings, self.ringtone_volume_slider_settings)
+
+        # Test Alert Tone button
+        self.test_ringtone_button = QPushButton("Test Alert Tone")
+        self.test_ringtone_button.setToolTip("Play the selected alert tone for 3 seconds")
+        self.test_ringtone_button.clicked.connect(self.test_ringtone)
+        self.test_ringtone_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        busylight_layout.addRow("", self.test_ringtone_button)
+
+        # Store alert tone widgets for show/hide
+        self.alert_tone_settings_widgets = [
+            self.ringtone_label_settings, self.ringtone_combo_settings,
+            self.ringtone_volume_label_settings, self.ringtone_volume_slider_settings,
+            self.test_ringtone_button
+        ]
+
+        # Connect checkbox to toggle visibility
+        self.alert_tone_enabled_checkbox_settings.stateChanged.connect(self.toggle_alert_tone_settings_visibility)
+
+        # Set initial visibility
+        self.toggle_alert_tone_settings_visibility()
+
+        layout.addWidget(busylight_group)
+
+        # Flash Alert Configuration Group
+        flash_group = QGroupBox("Flash Alert Configuration")
+        flash_group.setFont(bold_font)
+        flash_group.setStyleSheet(group_style)
+        flash_layout = QFormLayout(flash_group)
+        flash_layout.setLabelAlignment(Qt.AlignLeft)
+        flash_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        flash_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        flash_layout.setSpacing(12)
+
+        # Enable Flash on Alert checkbox
+        self.flash_enabled_checkbox_settings = QCheckBox()
+        self.flash_enabled_checkbox_settings.setStyleSheet(checkbox_style)
+        self.flash_enabled_checkbox_settings.setChecked(settings.value("busylight/flash_enabled", False, type=bool))
+        self.flash_enabled_checkbox_settings.setToolTip("Flash the light when an alert is triggered")
+        flash_layout.addRow("Enable Flash on Alert:", self.flash_enabled_checkbox_settings)
+
+        # Flash Speed dropdown
+        self.flash_speed_label_settings = QLabel("Flash Speed:")
+        self.flash_speed_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+        self.flash_speed_combo_settings = QComboBox()
+        self.flash_speed_combo_settings.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px 12px;
+                border: 1px solid {colors['input_border']};
+                border-radius: 8px;
+                background: {colors['input_bg']};
+                font-size: 13px;
+                color: {colors['text_secondary']};
+            }}
+            QComboBox:hover {{
+                border-color: {colors['accent_blue']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                padding-right: 8px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid {colors['text_secondary']};
+                margin-right: 4px;
+            }}
+        """)
+
+        # Add speed options
+        self.flash_speed_combo_settings.addItem("Slow (0.75s)", "slow")
+        self.flash_speed_combo_settings.addItem("Medium (0.5s)", "medium")
+        self.flash_speed_combo_settings.addItem("Fast (0.25s)", "fast")
+
+        saved_flash_speed = settings.value("busylight/flash_speed", "medium")
+        flash_speed_index = {"slow": 0, "medium": 1, "fast": 2}.get(saved_flash_speed, 1)
+        self.flash_speed_combo_settings.setCurrentIndex(flash_speed_index)
+        self.flash_speed_combo_settings.setToolTip("Speed at which the light flashes")
+
+        flash_layout.addRow(self.flash_speed_label_settings, self.flash_speed_combo_settings)
+
+        # Flash Count slider
+        self.flash_count_label_settings = QLabel("Flash Count:")
+        self.flash_count_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+
+        # Create horizontal layout for slider and value label
+        flash_count_layout = QHBoxLayout()
+        self.flash_count_slider_settings = QSlider(Qt.Horizontal)
+        self.flash_count_slider_settings.setRange(1, 10)
+        self.flash_count_slider_settings.setValue(settings.value("busylight/flash_count", 3, type=int))
+        self.flash_count_slider_settings.setToolTip("Number of times to flash (1-10)")
+        self.flash_count_slider_settings.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {colors['input_border']};
+                height: 8px;
+                background: {colors['input_bg']};
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors['accent_blue']};
+                border: none;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+        """)
+
+        # Add value label next to slider
+        self.flash_count_value_label_settings = QLabel(str(settings.value("busylight/flash_count", 3, type=int)))
+        self.flash_count_value_label_settings.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 14px; min-width: 30px;")
+        self.flash_count_slider_settings.valueChanged.connect(
+            lambda v: self.flash_count_value_label_settings.setText(str(v))
+        )
+
+        flash_count_layout.addWidget(self.flash_count_slider_settings)
+        flash_count_layout.addWidget(self.flash_count_value_label_settings)
+
+        flash_layout.addRow(self.flash_count_label_settings, flash_count_layout)
+
+        # Flash Secondary Color picker
+        self.flash_color_label_settings = QLabel("Flash Color:")
+        self.flash_color_label_settings.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+
+        # Create horizontal layout for color preview and button
+        flash_color_layout = QHBoxLayout()
+
+        # Get saved color or default to white
+        saved_flash_color = settings.value("busylight/flash_color", "#FFFFFF")
+        self.current_flash_color = QColor(saved_flash_color)
+
+        # Color preview square
+        self.flash_color_preview_settings = QLabel()
+        self.flash_color_preview_settings.setFixedSize(30, 30)
+        self.flash_color_preview_settings.setStyleSheet(f"""
+            QLabel {{
+                background-color: {self.current_flash_color.name()};
+                border: 2px solid {colors['input_border']};
+                border-radius: 4px;
+            }}
+        """)
+
+        # Color picker button
+        self.flash_color_button_settings = QPushButton("Choose Color")
+        self.flash_color_button_settings.setToolTip("Select the secondary color to flash")
+        self.flash_color_button_settings.clicked.connect(self.choose_flash_color)
+        self.flash_color_button_settings.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+
+        flash_color_layout.addWidget(self.flash_color_preview_settings)
+        flash_color_layout.addWidget(self.flash_color_button_settings)
+        flash_color_layout.addStretch()
+
+        flash_layout.addRow(self.flash_color_label_settings, flash_color_layout)
+
+        # Store flash settings widgets for show/hide
+        self.flash_settings_widgets = [
+            self.flash_speed_label_settings, self.flash_speed_combo_settings,
+            self.flash_count_label_settings, flash_count_layout.itemAt(0).widget(),
+            flash_count_layout.itemAt(1).widget(),
+            self.flash_color_label_settings, self.flash_color_preview_settings,
+            self.flash_color_button_settings
+        ]
+
+        # Connect checkbox to toggle visibility
+        self.flash_enabled_checkbox_settings.stateChanged.connect(self.toggle_flash_settings_visibility)
+
+        # Set initial visibility
+        self.toggle_flash_settings_visibility()
+
+        layout.addWidget(flash_group)
+
         # App Configuration Group
         app_group = QGroupBox("Application Settings")
         app_group.setFont(bold_font)
@@ -5792,6 +6246,110 @@ class BusylightApp(QMainWindow):
             for widget in self.tts_settings_widgets:
                 widget.setVisible(is_enabled)
 
+    def toggle_alert_tone_settings_visibility(self):
+        """Show or hide alert tone configuration controls in Settings dialog"""
+        if hasattr(self, 'alert_tone_settings_widgets'):
+            is_enabled = self.alert_tone_enabled_checkbox_settings.isChecked()
+            for widget in self.alert_tone_settings_widgets:
+                widget.setVisible(is_enabled)
+
+    def toggle_flash_settings_visibility(self):
+        """Show or hide flash alert configuration controls in Settings dialog"""
+        if hasattr(self, 'flash_settings_widgets'):
+            is_enabled = self.flash_enabled_checkbox_settings.isChecked()
+            for widget in self.flash_settings_widgets:
+                widget.setVisible(is_enabled)
+
+    def choose_flash_color(self):
+        """Open color picker dialog for flash secondary color"""
+        color = QColorDialog.getColor(self.current_flash_color, self, "Choose Flash Color")
+        if color.isValid():
+            self.current_flash_color = color
+            # Update the preview square
+            colors = get_adaptive_colors()
+            self.flash_color_preview_settings.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {color.name()};
+                    border: 2px solid {colors['input_border']};
+                    border-radius: 4px;
+                }}
+            """)
+
+    def test_ringtone(self):
+        """Test the selected alert tone by playing it for 3 seconds"""
+        try:
+            if not hasattr(self, 'ringtone_combo_settings'):
+                return
+
+            # Get the selected alert tone
+            ringtone_key = self.ringtone_combo_settings.currentData()
+            if not ringtone_key or ringtone_key not in LightController.RINGTONES:
+                self.add_log(f"[{get_timestamp()}] Invalid alert tone selection")
+                return
+
+            # Check if light is available
+            if not self.light_controller or not self.light_controller.light:
+                self.add_log(f"[{get_timestamp()}] Busylight device not connected - cannot test alert tone")
+                QMessageBox.warning(self, "Device Not Connected",
+                                  "Busylight device is not connected. Please connect your device to test the alert tone.")
+                return
+
+            ringtone_name = LightController.RINGTONE_NAMES.get(ringtone_key, ringtone_key)
+            self.add_log(f"[{get_timestamp()}] Testing alert tone: {ringtone_name}")
+
+            # Disable the test button to prevent multiple clicks
+            self.test_ringtone_button.setEnabled(False)
+            self.test_ringtone_button.setText("Playing...")
+
+            # Save current light state
+            current_color = self.light_controller.current_status
+            saved_ringtone = self.light_controller.current_ringtone
+            saved_volume = self.light_controller.current_volume
+
+            # Get the selected volume from the slider
+            test_volume = self.ringtone_volume_slider_settings.value() if hasattr(self, 'ringtone_volume_slider_settings') else 7
+
+            # Set the test alert tone and volume temporarily
+            self.light_controller.current_ringtone = ringtone_key
+            self.light_controller.current_volume = test_volume
+
+            # Apply the alert tone by setting the current status (this will trigger the tone)
+            if current_color == "off":
+                # If light is off, temporarily turn it on to play the alert tone
+                self.light_controller.set_status("normal", log_action=False)
+            else:
+                # Re-apply current status to trigger alert tone
+                self.light_controller.set_status(current_color, log_action=False)
+
+            # Schedule alert tone stop after 3 seconds
+            def stop_test_ringtone():
+                try:
+                    # Restore previous alert tone settings
+                    self.light_controller.current_ringtone = saved_ringtone
+                    self.light_controller.current_volume = saved_volume
+
+                    # Restore original light state
+                    self.light_controller.set_status(current_color, log_action=False)
+
+                    # Re-enable the test button
+                    self.test_ringtone_button.setEnabled(True)
+                    self.test_ringtone_button.setText("Test Alert Tone")
+
+                    self.add_log(f"[{get_timestamp()}] Alert tone test completed")
+                except Exception as e:
+                    self.add_log(f"[{get_timestamp()}] Error stopping test alert tone: {e}")
+                    self.test_ringtone_button.setEnabled(True)
+                    self.test_ringtone_button.setText("Test Alert Tone")
+
+            # Use QTimer to stop after 3 seconds
+            QTimer.singleShot(3000, stop_test_ringtone)
+
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error testing alert tone: {e}")
+            if hasattr(self, 'test_ringtone_button'):
+                self.test_ringtone_button.setEnabled(True)
+                self.test_ringtone_button.setText("Test Alert Tone")
+
     def test_tts_settings_dialog(self):
         """Test TTS from the Settings dialog"""
         try:
@@ -5838,6 +6396,29 @@ class BusylightApp(QMainWindow):
         # Save URL settings
         if hasattr(self, 'url_enabled_checkbox'):
             settings.setValue("url/enabled", self.url_enabled_checkbox.isChecked())
+
+        # Save Busylight settings
+        if hasattr(self, 'alert_tone_enabled_checkbox_settings'):
+            settings.setValue("busylight/alert_tone_enabled", self.alert_tone_enabled_checkbox_settings.isChecked())
+        if hasattr(self, 'ringtone_combo_settings'):
+            ringtone_key = self.ringtone_combo_settings.currentData()
+            settings.setValue("busylight/ringtone", ringtone_key)
+        if hasattr(self, 'ringtone_volume_slider_settings'):
+            volume = self.ringtone_volume_slider_settings.value()
+            settings.setValue("busylight/volume", volume)
+            # Note: We don't apply the alert tone here - it will only play when an alert occurs
+
+        # Save Flash Alert settings
+        if hasattr(self, 'flash_enabled_checkbox_settings'):
+            settings.setValue("busylight/flash_enabled", self.flash_enabled_checkbox_settings.isChecked())
+        if hasattr(self, 'flash_speed_combo_settings'):
+            flash_speed = self.flash_speed_combo_settings.currentData()
+            settings.setValue("busylight/flash_speed", flash_speed)
+        if hasattr(self, 'flash_count_slider_settings'):
+            flash_count = self.flash_count_slider_settings.value()
+            settings.setValue("busylight/flash_count", flash_count)
+        if hasattr(self, 'current_flash_color'):
+            settings.setValue("busylight/flash_color", self.current_flash_color.name())
 
         # Save app settings
         if hasattr(self, 'start_minimized_checkbox'):
