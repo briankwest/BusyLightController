@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout,
                             QSplitter, QListWidget, QListWidgetItem)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
-from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen, QTextCursor
+from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen, QTextCursor, QBrush, QPolygon
 from PySide6.QtWidgets import QSpinBox, QSlider
 import webbrowser
 from gtts import gTTS
@@ -2363,7 +2363,9 @@ class AnalyticsDashboard(QDialog):
         # Data storage
         self.current_stats = None
         self.ticket_timeline = []  # Store historical ticket counts for timeline
-        
+        self.priority_timeline = []  # Store priority distribution over time
+        self.category_timeline = []  # Store category distribution over time
+
         # Setup UI
         self.setup_ui()
         
@@ -2511,28 +2513,54 @@ class AnalyticsDashboard(QDialog):
         self.priority_group = QGroupBox("Priority Breakdown")
         priority_layout = QVBoxLayout(self.priority_group)
         self.priority_chart = PieChartWidget()
-        self.priority_chart.setMinimumSize(300, 250)
+        self.priority_chart.setMinimumSize(250, 300)
+        self.priority_chart.setMaximumWidth(500)
         priority_layout.addWidget(self.priority_chart)
         charts_layout.addWidget(self.priority_group)
-        
+
         # Category bar chart
         self.category_group = QGroupBox("Category Breakdown")
         category_layout = QVBoxLayout(self.category_group)
         self.category_chart = BarChartWidget()
-        self.category_chart.setMinimumSize(300, 250)
+        self.category_chart.setMinimumSize(250, 300)
+        self.category_chart.setMaximumWidth(500)
         category_layout.addWidget(self.category_chart)
         charts_layout.addWidget(self.category_group)
         
         content_layout.addLayout(charts_layout)
         
         # Timeline chart for ticket counts over time
-        self.timeline_group = QGroupBox("Ticket Count Timeline")
+        self.timeline_group = QGroupBox("Ticket Count Timeline (24h)")
         timeline_layout = QVBoxLayout(self.timeline_group)
         self.timeline_chart = TimelineChartWidget()
         self.timeline_chart.setMinimumHeight(200)
         timeline_layout.addWidget(self.timeline_chart)
         content_layout.addWidget(self.timeline_group)
-        
+
+        # Priority distribution timeline (stacked area chart)
+        self.priority_timeline_group = QGroupBox("Priority Distribution Timeline (24h)")
+        priority_timeline_layout = QVBoxLayout(self.priority_timeline_group)
+        self.priority_timeline_chart = StackedAreaChartWidget()
+        self.priority_timeline_chart.setMinimumHeight(250)
+        priority_timeline_layout.addWidget(self.priority_timeline_chart)
+        content_layout.addWidget(self.priority_timeline_group)
+
+        # Category trends timeline (multi-line chart)
+        self.category_timeline_group = QGroupBox("Top 5 Category Trends (24h)")
+        category_timeline_layout = QVBoxLayout(self.category_timeline_group)
+        self.category_timeline_chart = MultiLineChartWidget()
+        self.category_timeline_chart.setMinimumHeight(250)
+        category_timeline_layout.addWidget(self.category_timeline_chart)
+        content_layout.addWidget(self.category_timeline_group)
+
+        # Ticket velocity chart (rate of change)
+        self.velocity_group = QGroupBox("Ticket Velocity (Rate of Change)")
+        velocity_layout = QVBoxLayout(self.velocity_group)
+        self.velocity_chart = VelocityChartWidget()
+        self.velocity_chart.setMinimumHeight(250)
+        velocity_layout.addWidget(self.velocity_chart)
+        content_layout.addWidget(self.velocity_group)
+
         # Recent tickets table
         self.recent_tickets_group = QGroupBox("Recent Tickets")
         recent_layout = QVBoxLayout(self.recent_tickets_group)
@@ -2654,23 +2682,59 @@ class AnalyticsDashboard(QDialog):
                     
         except Exception as e:
             print(f"[{get_timestamp()}] Error refreshing analytics data: {e}")
-    
+
+    def should_add_timeline_point(self, new_point, min_time_gap_seconds=300):
+        """
+        Determines if a new point should be added to timeline using smart change-based filtering.
+
+        Args:
+            new_point: dict with keys 'timestamp' (datetime) and 'count' (int)
+            min_time_gap_seconds: minimum seconds between points if value unchanged (default 5 min)
+
+        Returns:
+            bool: True if point should be added, False otherwise
+        """
+        if not self.ticket_timeline:
+            return True
+
+        last_point = self.ticket_timeline[-1]
+        time_diff = (new_point['timestamp'] - last_point['timestamp']).total_seconds()
+        count_diff = abs(new_point['count'] - last_point['count'])
+
+        # Add point if:
+        # 1. Count changed (meaningful data)
+        # 2. Significant time gap (prevents visual gaps in timeline)
+        if count_diff > 0 or time_diff >= min_time_gap_seconds:
+            return True
+
+        return False
+
+    def is_within_24_hours(self, timestamp):
+        """Check if timestamp is within the last 24 hours"""
+        import datetime
+        now = datetime.datetime.now()
+        time_diff = (now - timestamp).total_seconds()
+        return time_diff <= (24 * 60 * 60)  # 24 hours in seconds
+
     def load_historical_timeline_data(self):
-        """Load the previous 20 events from ticket_stats to populate timeline"""
+        """Load historical events from ticket_stats with smart filtering and 24-hour window"""
         try:
-            # Get the last 20 events from the ticket_stats list (most recent first)
-            historical_stats = self.redis_client.lrange("ticket_stats", 0, 19)
-            
+            # Get up to 100 events from Redis (enough to cover 24 hours of activity)
+            historical_stats = self.redis_client.lrange("ticket_stats", 0, 99)
+
             if historical_stats:
                 print(f"[{get_timestamp()}] Loading {len(historical_stats)} historical ticket stats for timeline")
-                
+
+                points_added = 0
+                points_filtered = 0
+
                 # Process events in reverse order (oldest first) to build timeline correctly
                 for stats_json in reversed(historical_stats):
                     try:
                         stats_data = json.loads(stats_json)
                         data = stats_data.get('data', {})
                         total_tickets = data.get('total_tickets', 0)
-                        
+
                         # Parse the timestamp from the event
                         created_at_str = stats_data.get('created_at', '')
                         if created_at_str:
@@ -2685,26 +2749,50 @@ class AnalyticsDashboard(QDialog):
                                 timestamp = datetime.datetime.now()
                         else:
                             timestamp = datetime.datetime.now()
-                        
-                        # Add to timeline
-                        self.ticket_timeline.append({
+
+                        # Skip if outside 24-hour window
+                        if not self.is_within_24_hours(timestamp):
+                            continue
+
+                        # Create new point
+                        new_point = {
                             'timestamp': timestamp,
                             'count': total_tickets
-                        })
-                        
+                        }
+
+                        # Apply smart filtering - only add if meaningful change
+                        if self.should_add_timeline_point(new_point, min_time_gap_seconds=300):
+                            self.ticket_timeline.append(new_point)
+                            points_added += 1
+
+                            # Also add priority and category data for new charts
+                            priorities = data.get('priorities', {})
+                            categories = data.get('categories', {})
+
+                            self.priority_timeline.append({
+                                'timestamp': timestamp,
+                                'priorities': priorities
+                            })
+
+                            self.category_timeline.append({
+                                'timestamp': timestamp,
+                                'categories': categories
+                            })
+                        else:
+                            points_filtered += 1
+
                     except json.JSONDecodeError as e:
                         print(f"[{get_timestamp()}] Error parsing historical stats: {e}")
                         continue
-                
-                # Keep only last 100 data points for performance
-                if len(self.ticket_timeline) > 100:
-                    self.ticket_timeline = self.ticket_timeline[-100:]
-                
-                print(f"[{get_timestamp()}] Loaded {len(self.ticket_timeline)} historical data points for timeline")
-                
-                # Update the timeline chart with historical data
+
+                print(f"[{get_timestamp()}] Loaded {points_added} historical data points for timeline ({points_filtered} filtered as duplicates)")
+
+                # Update all timeline charts with historical data
                 self.timeline_chart.set_data(self.ticket_timeline)
-                
+                self.priority_timeline_chart.set_data(self.priority_timeline)
+                self.category_timeline_chart.set_data(self.category_timeline)
+                self.velocity_chart.set_data(self.ticket_timeline)
+
         except Exception as e:
             print(f"[{get_timestamp()}] Error loading historical timeline data: {e}")
     
@@ -2739,35 +2827,58 @@ class AnalyticsDashboard(QDialog):
             language_count = len([lang for lang, count in languages.items() if count > 0])
             self.languages_count_label.setText(str(language_count))
             
-            # Add to timeline data
+            # Add to timeline data with smart filtering
             import datetime
             timestamp = datetime.datetime.now()
-            
-            # Only add new timeline data if this represents a real change
-            # Check if this is significantly different from the last data point
-            should_add_point = True
-            if self.ticket_timeline:
-                last_point = self.ticket_timeline[-1]
-                time_diff = (timestamp - last_point['timestamp']).total_seconds()
-                count_diff = abs(total_tickets - last_point['count'])
-                
-                # Only add if enough time has passed (30+ seconds) OR ticket count changed
-                if time_diff < 30 and count_diff == 0:
-                    should_add_point = False
-            
-            if should_add_point:
-                self.ticket_timeline.append({
+
+            # Create new point
+            new_point = {
+                'timestamp': timestamp,
+                'count': total_tickets
+            }
+
+            # Use unified filtering function (30 seconds for real-time updates)
+            if self.should_add_timeline_point(new_point, min_time_gap_seconds=30):
+                self.ticket_timeline.append(new_point)
+
+                # Also add priority and category data for timeline charts
+                priorities = data.get('priorities', {})
+                categories = data.get('categories', {})
+
+                self.priority_timeline.append({
                     'timestamp': timestamp,
-                    'count': total_tickets
+                    'priorities': priorities
                 })
-                
-                # Keep only last 100 data points for performance
-                if len(self.ticket_timeline) > 100:
-                    self.ticket_timeline = self.ticket_timeline[-100:]
-                
-                # Update timeline chart
+
+                self.category_timeline.append({
+                    'timestamp': timestamp,
+                    'categories': categories
+                })
+
+                # Trim data points outside 24-hour window for all timelines
+                cutoff_time = datetime.datetime.now() - datetime.timedelta(hours=24)
+                self.ticket_timeline = [
+                    point for point in self.ticket_timeline
+                    if point['timestamp'] > cutoff_time
+                ]
+                self.priority_timeline = [
+                    point for point in self.priority_timeline
+                    if point['timestamp'] > cutoff_time
+                ]
+                self.category_timeline = [
+                    point for point in self.category_timeline
+                    if point['timestamp'] > cutoff_time
+                ]
+
+                # Update all timeline charts
                 self.timeline_chart.set_data(self.ticket_timeline)
-            
+                if hasattr(self, 'priority_timeline_chart'):
+                    self.priority_timeline_chart.set_data(self.priority_timeline)
+                if hasattr(self, 'category_timeline_chart'):
+                    self.category_timeline_chart.set_data(self.category_timeline)
+                if hasattr(self, 'velocity_chart'):
+                    self.velocity_chart.set_data(self.ticket_timeline)
+
             # Update priority pie chart
             priorities = data.get('priorities', {})
             self.priority_chart.set_data(priorities, "Priority Distribution")
@@ -2861,11 +2972,16 @@ class PieChartWidget(QWidget):
         if total == 0:
             return
         
-        # Chart area - improved sizing
-        margin = 30
-        legend_width = 180
-        chart_size = min(self.width() - margin * 2 - legend_width, self.height() - margin * 2 - 40)
-        chart_rect = QRect(margin, margin + 40, chart_size, chart_size)
+        # Chart area - legend at bottom now
+        margin = 20
+        legend_height = 80  # Space for legend at bottom
+        # Make pie chart larger by using more of available space
+        available_width = self.width() - margin * 2
+        available_height = self.height() - margin * 2 - 40 - legend_height
+        chart_size = min(available_width, available_height)
+        # Center the chart horizontally
+        chart_x = margin + max(0, (available_width - chart_size) // 2)
+        chart_rect = QRect(chart_x, margin + 40, chart_size, chart_size)
         
         # Draw title with better styling
         painter.setPen(QColor(colors['text_primary']))
@@ -2883,48 +2999,54 @@ class PieChartWidget(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(shadow_rect)
         
-        # Draw pie slices with improved styling
+        # Draw pie slices
         start_angle = 0
-        legend_y = chart_rect.top()
-        
         sorted_data = sorted(self.data.items(), key=lambda x: x[1], reverse=True)
-        
+
         for i, (label, value) in enumerate(sorted_data):
             # Calculate slice angle
             span_angle = int((value / total) * 360 * 16)  # 16ths of degrees for Qt
-            
+
             # Set color with gradient effect
             base_color = QColor(self.colors[i % len(self.colors)])
             painter.setBrush(base_color)
             painter.setPen(QColor(colors['bg_primary']))  # Thin white border
-            
+
             # Draw slice
             painter.drawPie(chart_rect, start_angle, span_angle)
-            
-            # Draw legend with better spacing and alignment
-            legend_x = chart_rect.right() + 20
-            legend_color_rect = QRect(legend_x, legend_y + 2, 16, 16)
-            
-            # Legend color box with border
+            start_angle += span_angle
+
+        # Draw legend at bottom horizontally
+        legend_y = chart_rect.bottom() + 20
+        legend_font = QFont()
+        legend_font.setPointSize(9)
+        painter.setFont(legend_font)
+
+        # Calculate how many items per row based on available width
+        items_per_row = min(4, len(sorted_data))
+        item_width = self.width() // items_per_row
+
+        for i, (label, value) in enumerate(sorted_data):
+            row = i // items_per_row
+            col = i % items_per_row
+
+            legend_x = col * item_width + 10
+            current_y = legend_y + row * 25
+
+            # Draw color box
+            base_color = QColor(self.colors[i % len(self.colors)])
+            color_rect = QRect(legend_x, current_y + 2, 16, 16)
             painter.setBrush(base_color)
             painter.setPen(QColor(colors['border_secondary']))
-            painter.drawRect(legend_color_rect)
-            
-            # Legend text with better formatting
+            painter.drawRect(color_rect)
+
+            # Draw label text
             painter.setPen(QColor(colors['text_primary']))
-            text_font = QFont()
-            text_font.setPointSize(10)
-            painter.setFont(text_font)
-            
             percentage = (value / total) * 100
-            # Truncate long labels
-            display_label = label if len(label) <= 12 else label[:9] + "..."
+            display_label = label if len(label) <= 8 else label[:6] + "..."
             legend_text = f"{display_label}: {value} ({percentage:.1f}%)"
-            text_rect = QRect(legend_x + 22, legend_y, legend_width - 22, 20)
+            text_rect = QRect(legend_x + 22, current_y, item_width - 32, 20)
             painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, legend_text)
-            
-            start_angle += span_angle
-            legend_y += 25  # Better spacing between legend items
 
 # Custom Bar Chart Widget
 class BarChartWidget(QWidget):
@@ -2969,9 +3091,10 @@ class BarChartWidget(QWidget):
         if total == 0:
             return
         
-        # Chart area
+        # Chart area with space for legend at bottom
         margin = 30
-        chart_rect = self.rect().adjusted(margin, margin + 40, -margin, -margin - 30)
+        legend_height = 80  # Space for legend at bottom
+        chart_rect = self.rect().adjusted(margin, margin + 40, -margin, -margin - legend_height)
         
         # Draw title
         painter.setPen(QColor(colors['text_primary']))
@@ -3040,27 +3163,9 @@ class BarChartWidget(QWidget):
             value_font.setPointSize(9)
             value_font.setBold(True)
             painter.setFont(value_font)
-            
+
             value_rect = QRect(int(bar_x), int(bar_y) - 20, int(bar_width), 15)
             painter.drawText(value_rect, Qt.AlignCenter, str(value))
-            
-            # Draw label below bar (rotated for better fit)
-            painter.save()
-            label_font = QFont()
-            label_font.setPointSize(8)
-            painter.setFont(label_font)
-            
-            # Truncate long labels
-            display_label = label if len(label) <= 8 else label[:5] + "..."
-            
-            # Position for rotated text
-            label_x = bar_x + bar_width / 2
-            label_y = chart_rect.bottom() + 15
-            
-            painter.translate(label_x, label_y)
-            painter.rotate(-45)  # Rotate text 45 degrees
-            painter.drawText(-30, 0, 60, 15, Qt.AlignCenter, display_label)
-            painter.restore()
         
         # Draw Y-axis labels
         painter.setPen(QColor(colors['text_secondary']))
@@ -3071,9 +3176,39 @@ class BarChartWidget(QWidget):
         for i in range(5):  # 5 Y-axis labels
             y_val = (max_value / 4) * i
             y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
-            
+
             label_rect = QRect(5, int(y_pos) - 10, margin - 10, 20)
             painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(y_val)}")
+
+        # Draw legend at bottom horizontally
+        legend_y = chart_rect.bottom() + 10
+        legend_font = QFont()
+        legend_font.setPointSize(9)
+        painter.setFont(legend_font)
+
+        # Calculate how many items per row based on available width
+        items_per_row = min(5, len(sorted_data))
+        item_width = self.width() // items_per_row
+
+        for i, (label, value) in enumerate(sorted_data):
+            row = i // items_per_row
+            col = i % items_per_row
+
+            legend_x = col * item_width + 10
+            current_y = legend_y + row * 25
+
+            # Draw color box
+            color = QColor(self.colors[i % len(self.colors)])
+            color_rect = QRect(legend_x, current_y + 2, 16, 16)
+            painter.setBrush(color)
+            painter.setPen(QColor(colors['border_secondary']))
+            painter.drawRect(color_rect)
+
+            # Draw label text
+            painter.setPen(QColor(colors['text_primary']))
+            display_label = label if len(label) <= 12 else label[:10] + "..."
+            text_rect = QRect(legend_x + 22, current_y, item_width - 32, 20)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, display_label)
 
 # Custom Timeline Chart Widget  
 class TimelineChartWidget(QWidget):
@@ -3091,7 +3226,7 @@ class TimelineChartWidget(QWidget):
         
     def mouseMoveEvent(self, event):
         """Handle mouse movement for tooltips"""
-        mouse_pos = event.pos()
+        mouse_pos = event.position().toPoint()
         self.hover_point = None
         
         # Check if mouse is over any data point
@@ -3193,27 +3328,22 @@ class TimelineChartWidget(QWidget):
         for i in range(len(points) - 1):
             painter.drawLine(points[i], points[i + 1])
         
-        # Draw data points with improved styling
-        for i, (point, data) in enumerate(self.data_points):
-            if i == self.hover_point:
-                # Highlight hovered point
-                painter.setBrush(QColor(colors['accent_orange']))
-                painter.setPen(QColor(colors['accent_orange']))
-                painter.drawEllipse(point, 8, 8)  # Larger when hovered
-                
-                # Draw count label for hovered point
-                painter.setPen(QColor(colors['text_primary']))
-                label_font = QFont()
-                label_font.setPointSize(10)
-                label_font.setBold(True)
-                painter.setFont(label_font)
-                label_rect = QRect(point.x() - 15, point.y() - 25, 30, 15)
-                painter.drawText(label_rect, Qt.AlignCenter, str(data['count']))
-            else:
-                # Normal point
-                painter.setBrush(QColor(colors['accent_blue']))
-                painter.setPen(QColor(colors['bg_primary']))
-                painter.drawEllipse(point, 5, 5)
+        # Draw hovered point highlight only (no dots for all points)
+        if self.hover_point is not None:
+            point, data = self.data_points[self.hover_point]
+            # Highlight hovered point
+            painter.setBrush(QColor(colors['accent_orange']))
+            painter.setPen(QColor(colors['accent_orange']))
+            painter.drawEllipse(point, 8, 8)  # Larger when hovered
+
+            # Draw count label for hovered point
+            painter.setPen(QColor(colors['text_primary']))
+            label_font = QFont()
+            label_font.setPointSize(10)
+            label_font.setBold(True)
+            painter.setFont(label_font)
+            label_rect = QRect(point.x() - 15, point.y() - 25, 30, 15)
+            painter.drawText(label_rect, Qt.AlignCenter, str(data['count']))
         
         # Draw Y-axis labels with better formatting
         painter.setPen(QColor(colors['text_secondary']))
@@ -3240,6 +3370,425 @@ class TimelineChartWidget(QWidget):
                 
                 time_rect = QRect(int(x_pos) - 20, chart_rect.bottom() + 5, 40, 20)
                 painter.drawText(time_rect, Qt.AlignCenter, time_str)
+
+class StackedAreaChartWidget(QWidget):
+    """Stacked area chart showing priority distribution over time"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline_data = []  # List of {'timestamp': datetime, 'priorities': {'P1': X, 'P2': Y, ...}}
+        self.setMinimumHeight(250)
+
+    def set_data(self, timeline_data):
+        """Set the timeline data with priority information"""
+        self.timeline_data = timeline_data
+        self.update()
+
+    def paintEvent(self, event):
+        """Paint the stacked area chart"""
+        if not self.timeline_data or len(self.timeline_data) < 1:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        colors = get_adaptive_colors()
+
+        # Priority colors
+        priority_colors = {
+            'P1': '#ef5350',  # Red
+            'P2': '#ff9800',  # Orange
+            'P3': '#4a9eff',  # Blue
+            'P4': '#4caf50'   # Green
+        }
+
+        # Chart area
+        margin = 50
+        chart_rect = self.rect().adjusted(margin, margin + 30, -margin, -margin - 40)
+
+        # Draw title
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, "Priority Distribution Over Time")
+
+        if len(self.timeline_data) == 1:
+            # Single point - just show text
+            painter.setPen(QColor(colors['text_secondary']))
+            painter.drawText(chart_rect, Qt.AlignCenter, "Need more data points for timeline")
+            return
+
+        # Find max total for scaling
+        max_total = 0
+        for data_point in self.timeline_data:
+            priorities = data_point.get('priorities', {})
+            total = sum(priorities.values())
+            max_total = max(max_total, total)
+
+        if max_total == 0:
+            max_total = 1
+
+        # Draw grid
+        painter.setPen(QColor(colors['border_secondary']))
+        for i in range(5):
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            painter.drawLine(chart_rect.left(), int(y_pos), chart_rect.right(), int(y_pos))
+
+        # Draw axes
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.bottomRight())
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())
+
+        # Draw stacked areas (from bottom to top: P4, P3, P2, P1)
+        priority_order = ['P4', 'P3', 'P2', 'P1']
+
+        for priority in priority_order:
+            from PySide6.QtGui import QPolygon, QBrush
+            polygon_points = []
+
+            # Bottom edge (left to right)
+            for i, data_point in enumerate(self.timeline_data):
+                priorities = data_point.get('priorities', {})
+
+                # Calculate cumulative height up to but not including this priority
+                cumulative = 0
+                for p in reversed(priority_order):
+                    if p == priority:
+                        break
+                    cumulative += priorities.get(p, 0)
+
+                x = chart_rect.left() + (i / (len(self.timeline_data) - 1)) * chart_rect.width()
+                y = chart_rect.bottom() - (cumulative / max_total) * chart_rect.height()
+                polygon_points.append(QPoint(int(x), int(y)))
+
+            # Top edge (right to left)
+            for i in reversed(range(len(self.timeline_data))):
+                data_point = self.timeline_data[i]
+                priorities = data_point.get('priorities', {})
+
+                # Calculate cumulative height including this priority
+                cumulative = 0
+                for p in reversed(priority_order):
+                    cumulative += priorities.get(p, 0)
+                    if p == priority:
+                        break
+
+                x = chart_rect.left() + (i / (len(self.timeline_data) - 1)) * chart_rect.width()
+                y = chart_rect.bottom() - (cumulative / max_total) * chart_rect.height()
+                polygon_points.append(QPoint(int(x), int(y)))
+
+            # Draw the filled area
+            if polygon_points:
+                polygon = QPolygon(polygon_points)
+                color = QColor(priority_colors[priority])
+                color.setAlpha(180)  # Semi-transparent
+                painter.setBrush(QBrush(color))
+                painter.setPen(Qt.NoPen)
+                painter.drawPolygon(polygon)
+
+        # Draw Y-axis labels
+        painter.setPen(QColor(colors['text_secondary']))
+        label_font = QFont()
+        label_font.setPointSize(9)
+        painter.setFont(label_font)
+
+        for i in range(5):
+            y_val = (max_total / 4) * i
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            label_rect = QRect(5, int(y_pos) - 10, margin - 10, 20)
+            painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(y_val)}")
+
+        # Draw X-axis time labels
+        num_labels = min(5, len(self.timeline_data))
+        for i in range(num_labels):
+            data_index = int(i * (len(self.timeline_data) - 1) / (num_labels - 1))
+            time_str = self.timeline_data[data_index]['timestamp'].strftime("%H:%M")
+            x_pos = chart_rect.left() + (data_index / (len(self.timeline_data) - 1)) * chart_rect.width()
+            time_rect = QRect(int(x_pos) - 20, chart_rect.bottom() + 5, 40, 20)
+            painter.drawText(time_rect, Qt.AlignCenter, time_str)
+
+        # Draw legend at bottom
+        legend_y = chart_rect.bottom() + 30
+        legend_x = chart_rect.left()
+        box_size = 12
+
+        for i, priority in enumerate(priority_order):
+            x_offset = i * 80
+            # Draw color box
+            color = QColor(priority_colors[priority])
+            painter.setBrush(QBrush(color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(legend_x + x_offset, legend_y, box_size, box_size)
+
+            # Draw label
+            painter.setPen(QColor(colors['text_primary']))
+            painter.setFont(label_font)
+            label_rect = QRect(legend_x + x_offset + box_size + 5, legend_y - 2, 60, 16)
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, priority)
+
+class MultiLineChartWidget(QWidget):
+    """Multi-line chart showing top categories trending over time"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline_data = []  # List of {'timestamp': datetime, 'categories': {'VOICE': X, 'MESSAGING': Y, ...}}
+        self.setMinimumHeight(250)
+        self.hover_point = None
+        self.setMouseTracking(True)
+
+    def set_data(self, timeline_data):
+        """Set the timeline data with category information"""
+        self.timeline_data = timeline_data
+        self.update()
+
+    def paintEvent(self, event):
+        """Paint the multi-line chart"""
+        if not self.timeline_data or len(self.timeline_data) < 1:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        colors = get_adaptive_colors()
+
+        # Category colors (Material Design palette)
+        category_colors = [
+            '#ef5350',  # Red
+            '#ff9800',  # Orange
+            '#4a9eff',  # Blue
+            '#4caf50',  # Green
+            '#ab47bc'   # Purple
+        ]
+
+        # Chart area
+        margin = 50
+        chart_rect = self.rect().adjusted(margin, margin + 30, -margin, -margin - 40)
+
+        # Draw title
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, "Top 5 Category Trends")
+
+        if len(self.timeline_data) == 1:
+            painter.setPen(QColor(colors['text_secondary']))
+            painter.drawText(chart_rect, Qt.AlignCenter, "Need more data points for timeline")
+            return
+
+        # Find top 5 categories by total volume
+        category_totals = {}
+        for data_point in self.timeline_data:
+            categories = data_point.get('categories', {})
+            for cat, count in categories.items():
+                category_totals[cat] = category_totals.get(cat, 0) + count
+
+        top_categories = sorted(category_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_category_names = [cat for cat, _ in top_categories]
+
+        if not top_category_names:
+            painter.setPen(QColor(colors['text_secondary']))
+            painter.drawText(chart_rect, Qt.AlignCenter, "No category data available")
+            return
+
+        # Find max value for scaling
+        max_value = 0
+        for data_point in self.timeline_data:
+            categories = data_point.get('categories', {})
+            for cat in top_category_names:
+                max_value = max(max_value, categories.get(cat, 0))
+
+        if max_value == 0:
+            max_value = 1
+
+        # Draw grid
+        painter.setPen(QColor(colors['border_secondary']))
+        for i in range(5):
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            painter.drawLine(chart_rect.left(), int(y_pos), chart_rect.right(), int(y_pos))
+
+        # Draw axes
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.bottomRight())
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())
+
+        # Draw lines for each category
+        for cat_idx, category in enumerate(top_category_names):
+            points = []
+            color = category_colors[cat_idx % len(category_colors)]
+
+            for i, data_point in enumerate(self.timeline_data):
+                categories = data_point.get('categories', {})
+                count = categories.get(category, 0)
+
+                x = chart_rect.left() + (i / (len(self.timeline_data) - 1)) * chart_rect.width()
+                y = chart_rect.bottom() - (count / max_value) * chart_rect.height()
+                points.append(QPoint(int(x), int(y)))
+
+            # Draw line
+            painter.setPen(QPen(QColor(color), 2))
+            for i in range(len(points) - 1):
+                painter.drawLine(points[i], points[i + 1])
+
+        # Draw Y-axis labels
+        painter.setPen(QColor(colors['text_secondary']))
+        label_font = QFont()
+        label_font.setPointSize(9)
+        painter.setFont(label_font)
+
+        for i in range(5):
+            y_val = (max_value / 4) * i
+            y_pos = chart_rect.bottom() - (i / 4) * chart_rect.height()
+            label_rect = QRect(5, int(y_pos) - 10, margin - 10, 20)
+            painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"{int(y_val)}")
+
+        # Draw X-axis time labels
+        num_labels = min(5, len(self.timeline_data))
+        for i in range(num_labels):
+            data_index = int(i * (len(self.timeline_data) - 1) / (num_labels - 1))
+            time_str = self.timeline_data[data_index]['timestamp'].strftime("%H:%M")
+            x_pos = chart_rect.left() + (data_index / (len(self.timeline_data) - 1)) * chart_rect.width()
+            time_rect = QRect(int(x_pos) - 20, chart_rect.bottom() + 5, 40, 20)
+            painter.drawText(time_rect, Qt.AlignCenter, time_str)
+
+        # Draw legend
+        legend_y = chart_rect.bottom() + 30
+        legend_x = chart_rect.left()
+        box_size = 12
+
+        for i, category in enumerate(top_category_names):
+            x_offset = i * 100
+            if x_offset + 100 > chart_rect.width():
+                break  # Don't overflow
+
+            color = category_colors[i % len(category_colors)]
+            painter.setBrush(QBrush(QColor(color)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(legend_x + x_offset, legend_y, box_size, box_size)
+
+            painter.setPen(QColor(colors['text_primary']))
+            painter.setFont(label_font)
+            label_rect = QRect(legend_x + x_offset + box_size + 5, legend_y - 2, 85, 16)
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, category[:12])  # Truncate long names
+
+class VelocityChartWidget(QWidget):
+    """Bar chart showing ticket velocity (rate of change)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeline_data = []  # List of {'timestamp': datetime, 'count': int, 'delta': int}
+        self.setMinimumHeight(250)
+
+    def set_data(self, timeline_data):
+        """Set the timeline data with velocity information"""
+        self.timeline_data = timeline_data
+        self.update()
+
+    def paintEvent(self, event):
+        """Paint the velocity chart"""
+        if not self.timeline_data or len(self.timeline_data) < 2:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        colors = get_adaptive_colors()
+
+        # Chart area
+        margin = 50
+        chart_rect = self.rect().adjusted(margin, margin + 30, -margin, -margin - 20)
+
+        # Draw title
+        painter.setPen(QColor(colors['text_primary']))
+        title_font = QFont()
+        title_font.setPointSize(14)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        title_rect = QRect(0, 5, self.width(), 30)
+        painter.drawText(title_rect, Qt.AlignCenter, "Ticket Velocity (Rate of Change)")
+
+        # Calculate deltas
+        deltas = []
+        for i in range(1, len(self.timeline_data)):
+            delta = self.timeline_data[i]['count'] - self.timeline_data[i-1]['count']
+            deltas.append({'timestamp': self.timeline_data[i]['timestamp'], 'delta': delta})
+
+        if not deltas:
+            return
+
+        # Find max absolute delta for scaling
+        max_delta = max(abs(d['delta']) for d in deltas)
+        if max_delta == 0:
+            max_delta = 1
+
+        # Draw center line (zero line)
+        center_y = chart_rect.top() + chart_rect.height() // 2
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.left(), center_y, chart_rect.right(), center_y)
+
+        # Draw grid lines
+        painter.setPen(QColor(colors['border_secondary']))
+        for i in range(3):  # Draw lines at +max, 0, -max
+            if i == 1:
+                continue  # Skip center (already drawn)
+            y_pos = chart_rect.top() + (i / 2) * chart_rect.height()
+            painter.drawLine(chart_rect.left(), int(y_pos), chart_rect.right(), int(y_pos))
+
+        # Draw axes
+        painter.setPen(QColor(colors['text_primary']))
+        painter.drawLine(chart_rect.bottomLeft(), chart_rect.topLeft())
+
+        # Calculate bar width
+        bar_width = max(2, int(chart_rect.width() / len(deltas) * 0.8))
+
+        # Draw bars
+        for i, data in enumerate(deltas):
+            delta = data['delta']
+
+            x = chart_rect.left() + (i / max(1, len(deltas) - 1)) * chart_rect.width()
+
+            if delta > 0:
+                # Positive change (green bar above center)
+                height = (delta / max_delta) * (chart_rect.height() / 2)
+                bar_rect = QRect(int(x) - bar_width // 2, int(center_y - height), bar_width, int(height))
+                painter.fillRect(bar_rect, QColor(colors['accent_green']))
+            elif delta < 0:
+                # Negative change (red bar below center)
+                height = abs(delta / max_delta) * (chart_rect.height() / 2)
+                bar_rect = QRect(int(x) - bar_width // 2, center_y, bar_width, int(height))
+                painter.fillRect(bar_rect, QColor(colors['accent_red']))
+
+        # Draw Y-axis labels
+        painter.setPen(QColor(colors['text_secondary']))
+        label_font = QFont()
+        label_font.setPointSize(9)
+        painter.setFont(label_font)
+
+        # Positive label
+        label_rect = QRect(5, chart_rect.top(), margin - 10, 20)
+        painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"+{int(max_delta)}")
+
+        # Zero label
+        label_rect = QRect(5, center_y - 10, margin - 10, 20)
+        painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, "0")
+
+        # Negative label
+        label_rect = QRect(5, chart_rect.bottom() - 20, margin - 10, 20)
+        painter.drawText(label_rect, Qt.AlignRight | Qt.AlignVCenter, f"-{int(max_delta)}")
+
+        # Draw X-axis time labels (show fewer for velocity)
+        num_labels = min(3, len(deltas))
+        for i in range(num_labels):
+            data_index = int(i * (len(deltas) - 1) / max(1, num_labels - 1))
+            time_str = deltas[data_index]['timestamp'].strftime("%H:%M")
+            x_pos = chart_rect.left() + (data_index / max(1, len(deltas) - 1)) * chart_rect.width()
+            time_rect = QRect(int(x_pos) - 20, chart_rect.bottom() + 5, 40, 20)
+            painter.drawText(time_rect, Qt.AlignCenter, time_str)
 
 # Ticket stats listener for real-time updates
 class TicketStatsListener(QObject):
