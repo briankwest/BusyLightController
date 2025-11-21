@@ -18,6 +18,7 @@ The application uses:
 - Redis for ticket system integration
 - `busylight-for-humans` library for hardware control
 - `pyttsx3` for cross-platform text-to-speech
+- `pygame.mixer` for audio playback
 - PyInstaller for packaging
 
 ## Development Commands
@@ -88,7 +89,9 @@ python build.py
 - **Event History**: Displays recent status events (skips fake/default events without source)
 
 ### Configuration Storage
-- **macOS**: `~/Library/Preferences/Busylight/BusylightController.plist`
+- **macOS**: `~/Library/Preferences/com.busylight.BusylightController.plist`
+  - Can be edited using `defaults` command: `defaults write com.busylight.BusylightController <key> -<type> <value>`
+  - Example: `defaults write com.busylight.BusylightController app.start_minimized -bool true`
 - **Windows**: Registry under `HKEY_CURRENT_USER\Software\Busylight\BusylightController`
 
 ### Redis Integration

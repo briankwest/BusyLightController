@@ -95,11 +95,19 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('icon.png', '.'), ('{icns_file}', '.'), ('sw.jpeg', '.')],
-    hiddenimports=['webbrowser'],
+    hiddenimports=[
+        'webbrowser',
+        'numpy',
+        'numpy.core',
+        'numpy.core._methods',
+        'numpy.lib.format',
+        'pygame',
+        'pygame.mixer',
+    ],
     hookspath=[],
     hooksconfig={{}},
-    runtime_hooks=[],
-    excludes=[],
+    runtime_hooks=['pyi_rth_numpy.py'],
+    excludes=['matplotlib', 'scipy', 'pandas', 'pygame.sndarray', 'pygame.surfarray'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -156,9 +164,14 @@ app = BUNDLE(
     
     # Run PyInstaller
     run_command(["pyinstaller", "--clean", spec_file])
-    
+
+    # Ad-hoc sign the app bundle to avoid Gatekeeper issues
+    app_bundle = f"dist/{APP_NAME}.app"
+    print("Signing app bundle...")
+    run_command(["codesign", "--force", "--deep", "--sign", "-", app_bundle])
+
     # Return path to the app bundle
-    return f"dist/{APP_NAME}.app"
+    return app_bundle
 
 def build_pkg_installer(app_bundle_path):
     """Build PKG installer from the app bundle"""
