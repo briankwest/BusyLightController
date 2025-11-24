@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4875,25 +4875,37 @@ class LightController(QObject):
                                                 self.flash_timer.deleteLater()
                                                 self.flash_timer = None
 
-                                        # Pass Ring enum directly as the library expects
-                                        # The RingtoneField BitField handles bit extraction internally
-                                        ringtone_param = ringtone
+                                        # On Windows, use CLI approach: Ring enum directly, minimal params, write_strategy
+                                        # On macOS, use GUI approach: bit-shifted, all params, batch_update
+                                        if platform.system() == "Windows":
+                                            # CLI approach for Windows
+                                            instruction = Instruction.Jump(
+                                                ringtone=ringtone,
+                                                volume=volume,
+                                                update=1,
+                                            )
+                                            cmd_buffer = CommandBuffer()
+                                            cmd_buffer.line0 = instruction.value
+                                            command_bytes = bytes(cmd_buffer)
 
-                                        # Create instruction with color, ringtone, and volume
-                                        instruction = Instruction.Jump(
-                                            target=0,
-                                            color=color,
-                                            on_time=0,
-                                            off_time=0,
-                                            ringtone=ringtone_param,
-                                            volume=volume,
-                                            update=1,
-                                        )
-
-                                        # Write directly to the device
-                                        with self.light.batch_update():
-                                            self.light.color = color
-                                            self.light.command.line0 = instruction.value
+                                            self.light.write_strategy(command_bytes)
+                                            self.light.on(color)
+                                            self.light.update()
+                                        else:
+                                            # GUI approach for macOS
+                                            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+                                            instruction = Instruction.Jump(
+                                                target=0,
+                                                color=color,
+                                                on_time=0,
+                                                off_time=0,
+                                                ringtone=ringtone_id,
+                                                volume=volume,
+                                                update=1,
+                                            )
+                                            with self.light.batch_update():
+                                                self.light.color = color
+                                                self.light.command.line0 = instruction.value
 
                                         # Add keepalive task
                                         if hasattr(self.light, 'add_task'):
@@ -4936,29 +4948,43 @@ class LightController(QObject):
                 return
 
         try:
-            # Pass Ring enum directly as the library expects
-            # The RingtoneField BitField handles bit extraction internally
-            ringtone_param = ringtone
+            # On Windows, use CLI approach: Ring enum directly, minimal params, write_strategy
+            # On macOS, use GUI approach: bit-shifted, all params, batch_update
+            if platform.system() == "Windows":
+                # CLI approach for Windows
+                instruction = Instruction.Jump(
+                    ringtone=ringtone,
+                    volume=volume,
+                    update=1,
+                )
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
+                command_bytes = bytes(cmd_buffer)
 
-            # Create instruction with color, ringtone, and volume all together
-            instruction = Instruction.Jump(
-                target=0,
-                color=color,
-                on_time=0,
-                off_time=0,
-                ringtone=ringtone_param,
-                volume=volume,
-                update=1,
-            )
+                self.light.write_strategy(command_bytes)
+                self.light.on(color)
+                self.light.update()
+            else:
+                # GUI approach for macOS
+                ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+                instruction = Instruction.Jump(
+                    target=0,
+                    color=color,
+                    on_time=0,
+                    off_time=0,
+                    ringtone=ringtone_id,
+                    volume=volume,
+                    update=1,
+                )
 
-            # Create command buffer and set the instruction
-            cmd_buffer = CommandBuffer()
-            cmd_buffer.line0 = instruction.value
+                # Create command buffer and set the instruction
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
 
-            # Write directly to the device
-            with self.light.batch_update():
-                self.light.color = color
-                self.light.command.line0 = instruction.value
+                # Write directly to the device
+                with self.light.batch_update():
+                    self.light.color = color
+                    self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
