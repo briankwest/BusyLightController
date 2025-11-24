@@ -5131,7 +5131,7 @@ class BusylightApp(QMainWindow):
                 other_groups = [g for g in self.redis_info['all_groups'] if g not in user_groups]
 
                 if other_groups:
-                    self.all_groups_splitter = self.create_split_panel_layout(other_groups, colors, "all_groups", display_only=True)
+                    self.all_groups_splitter = self.create_split_panel_layout(other_groups, colors, "all_groups")
                     all_groups_layout.addWidget(self.all_groups_splitter)
                 else:
                     # No other groups message
@@ -7646,7 +7646,7 @@ class BusylightApp(QMainWindow):
 
         return card
 
-    def create_split_panel_layout(self, groups, colors, panel_id="panel", display_only=False):
+    def create_split_panel_layout(self, groups, colors, panel_id="panel"):
         """Create a split panel view - master-detail layout with colored status dots"""
         # Main splitter container
         splitter = QSplitter(Qt.Horizontal)
