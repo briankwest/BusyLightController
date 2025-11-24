@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4897,8 +4897,12 @@ class LightController(QObject):
                                         buffer[64] = checksum % 256
 
                                         # Write buffer directly
+                                        # On Windows, prepend 0x00 byte (required by Windows HID driver)
                                         try:
-                                            self.light.device.write(bytes(buffer))
+                                            data = bytes(buffer)
+                                            if platform.system() == "Windows":
+                                                data = bytes([0x00]) + data
+                                            self.light.device.write(data)
                                         except Exception as e:
                                             self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
 
@@ -4965,8 +4969,12 @@ class LightController(QObject):
             buffer[64] = checksum % 256
 
             # Write buffer directly
+            # On Windows, prepend 0x00 byte (required by Windows HID driver)
             try:
-                self.light.device.write(bytes(buffer))
+                data = bytes(buffer)
+                if platform.system() == "Windows":
+                    data = bytes([0x00]) + data
+                self.light.device.write(data)
             except Exception as e:
                 if log_action:
                     self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
