@@ -127,6 +127,178 @@ def get_adaptive_colors():
             'hover_bg': '#f1f3f4'
         }
 
+# QSS (Qt Style Sheet) Helper Functions
+# These functions provide reusable styling patterns to reduce code duplication
+
+def qss_dialog_base(colors):
+    """Base dialog styling with background and text colors"""
+    return f"""
+        QDialog {{
+            background-color: {colors['bg_primary']};
+            color: {colors['text_primary']};
+        }}
+        QWidget {{
+            background-color: {colors['bg_primary']};
+            color: {colors['text_primary']};
+        }}
+    """
+
+def qss_groupbox_gradient(colors, title_size=16):
+    """Gradient groupbox with title styling"""
+    return f"""
+        QGroupBox {{
+            border: none;
+            border-radius: 12px;
+            margin: 8px;
+            padding: 16px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {colors['bg_primary']}, stop:1 {colors['bg_secondary']});
+            border: 2px solid {colors['border_secondary']};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 16px;
+            padding: 0 8px 0 8px;
+            color: {colors['text_primary']};
+            font-weight: 800;
+            font-size: {title_size}px;
+        }}
+    """
+
+def qss_groupbox_simple(colors):
+    """Simple groupbox without gradient"""
+    return f"""
+        QGroupBox {{
+            border: 2px solid {colors['border_secondary']};
+            border-radius: 8px;
+            padding: 16px;
+            background: {colors['bg_secondary']};
+        }}
+    """
+
+def qss_button_primary(colors, padding="8px 16px", border_radius=6):
+    """Primary action button (blue)"""
+    return f"""
+        QPushButton {{
+            background: {colors['accent_blue']};
+            color: white;
+            border: none;
+            padding: {padding};
+            border-radius: {border_radius}px;
+            font-weight: 600;
+            font-size: 13px;
+        }}
+        QPushButton:hover {{
+            background: {colors['hover_bg']};
+            color: {colors['text_primary']};
+        }}
+        QPushButton:pressed {{
+            background: {colors['bg_tertiary']};
+            color: {colors['text_primary']};
+        }}
+    """
+
+def qss_lineedit(colors, padding="8px 12px", border_radius=8):
+    """Text input field with focus state"""
+    return f"""
+        QLineEdit {{
+            padding: {padding};
+            border: 1px solid {colors['input_border']};
+            border-radius: {border_radius}px;
+            background: {colors['input_bg']};
+            font-size: 13px;
+            color: {colors['text_secondary']};
+        }}
+        QLineEdit:focus {{
+            border-color: {colors['accent_blue']};
+            outline: none;
+        }}
+    """
+
+def qss_combobox_full(colors, padding="8px 12px", border_radius=8):
+    """Full combobox with dropdown arrow and item view styling"""
+    return f"""
+        QComboBox {{
+            padding: {padding};
+            border: 1px solid {colors['input_border']};
+            border-radius: {border_radius}px;
+            background: {colors['input_bg']};
+            font-size: 13px;
+            color: {colors['text_secondary']};
+        }}
+        QComboBox:hover {{
+            border-color: {colors['accent_blue']};
+        }}
+        QComboBox::drop-down {{
+            border: none;
+            width: 20px;
+        }}
+        QComboBox::down-arrow {{
+            image: none;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 5px solid {colors['text_secondary']};
+        }}
+        QComboBox QAbstractItemView {{
+            background: {colors['input_bg']};
+            border: 1px solid {colors['input_border']};
+            selection-background-color: {colors['accent_blue']};
+            selection-color: {colors['bg_primary']};
+            color: {colors['text_primary']};
+        }}
+    """
+
+def qss_combobox_simple(colors, padding="8px 12px", border_radius=8):
+    """Simple combobox without custom arrow"""
+    return f"""
+        QComboBox {{
+            padding: {padding};
+            border: 1px solid {colors['input_border']};
+            border-radius: {border_radius}px;
+            background: {colors['input_bg']};
+            font-size: 13px;
+            color: {colors['text_secondary']};
+        }}
+    """
+
+def qss_slider_horizontal(colors):
+    """Horizontal slider with custom handle"""
+    return f"""
+        QSlider::groove:horizontal {{
+            border: 1px solid {colors['input_border']};
+            height: 8px;
+            background: {colors['input_bg']};
+            border-radius: 4px;
+        }}
+        QSlider::handle:horizontal {{
+            background: {colors['accent_blue']};
+            border: none;
+            width: 18px;
+            margin: -5px 0;
+            border-radius: 9px;
+        }}
+    """
+
+def qss_checkbox_indicator(colors, indicator_size=18, border_width=2):
+    """Checkbox with custom indicator styling"""
+    return f"""
+        QCheckBox {{
+            font-size: 14px;
+            color: {colors['text_primary']};
+        }}
+        QCheckBox::indicator {{
+            width: {indicator_size}px;
+            height: {indicator_size}px;
+            border: {border_width}px solid {colors['border_secondary']};
+            border-radius: 4px;
+            background: {colors['input_bg']};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {colors['accent_blue']};
+            border-color: {colors['accent_blue']};
+        }}
+    """
+
 def get_available_english_voices():
     """Get list of available English TTS accents for gTTS"""
     # gTTS uses Google's TTS API with different accents via TLD (top-level domain)
