@@ -1066,16 +1066,6 @@ class ConfigDialog(QDialog):
         layout.addWidget(button_box)
     
     def load_settings(self):
-        # # Load and set values
-        # self.redis_host_input.setText(self.settings.value("redis/host", "busylight.signalwire.me"))
-        # self.redis_port_input.setText(self.settings.value("redis/port", "6379"))
-        
-        # # Load token from settings or environment
-        # token = self.settings.value("redis/token", "")
-        # if not token and os.getenv('REDIS_BEARER_TOKEN'):
-        #     token = os.getenv('REDIS_BEARER_TOKEN')
-        # self.redis_token_input.setText(token)
-        
         # Load text-to-speech settings
         self.tts_enabled_checkbox.setChecked(self.settings.value("tts/enabled", False, type=bool))
         # TTS rate, volume, and voice settings will be loaded when UI controls are created
@@ -1108,11 +1098,6 @@ class ConfigDialog(QDialog):
                 widget.setVisible(is_enabled)
 
     def save_settings(self):
-        # Save Redis settings
-        # self.settings.setValue("redis/host", self.redis_host_input.text())
-        # self.settings.setValue("redis/port", self.redis_port_input.text())
-        # self.settings.setValue("redis/token", self.redis_token_input.text())
-        
         # Save text-to-speech settings
         self.settings.setValue("tts/enabled", self.tts_enabled_checkbox.isChecked())
         self.settings.setValue("tts/slow", self.tts_slow_checkbox.isChecked())
