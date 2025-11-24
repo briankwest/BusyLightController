@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4875,31 +4875,28 @@ class LightController(QObject):
                                                 self.flash_timer.deleteLater()
                                                 self.flash_timer = None
 
-                                        # Platform-specific ringtone handling
-                                        if platform.system() == "Windows":
-                                            # On Windows, use write_strategy() with explicit parameters
-                                            # Extract ringtone ID and set timing parameters explicitly
-                                            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+                                        # Extract ringtone ID
+                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-                                            cmd_buffer = CommandBuffer()
+                                        if platform.system() == "Windows":
+                                            # On Windows, use batch_update() with explicit timing parameters
+                                            # Key: set repeat=0, on_time=0, off_time=0 to prevent looping
                                             instruction = Instruction.Jump(
-                                                ringtone=ringtone_id,
-                                                volume=volume,
-                                                update=1,
+                                                target=0,
+                                                color=color,
                                                 repeat=0,
                                                 on_time=0,
                                                 off_time=0,
+                                                ringtone=ringtone_id,
+                                                volume=volume,
+                                                update=1,
                                             )
-                                            cmd_buffer.line0 = instruction.value
-                                            command_bytes = bytes(cmd_buffer)
 
-                                            self.light.write_strategy(command_bytes)
-                                            self.light.on(color)
-                                            self.light.update()
+                                            with self.light.batch_update():
+                                                self.light.color = color
+                                                self.light.command.line0 = instruction.value
                                         else:
                                             # On macOS, use the existing approach that works
-                                            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
-
                                             instruction = Instruction.Jump(
                                                 target=0,
                                                 color=color,
@@ -4955,31 +4952,33 @@ class LightController(QObject):
                 return
 
         try:
-            # Platform-specific ringtone handling
-            if platform.system() == "Windows":
-                # On Windows, use write_strategy() with explicit parameters
-                # Extract ringtone ID and set timing parameters explicitly
-                ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+            # Extract ringtone ID
+            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-                cmd_buffer = CommandBuffer()
+            if platform.system() == "Windows":
+                # On Windows, use batch_update() with explicit timing parameters
+                # Key: set repeat=0, on_time=0, off_time=0 to prevent looping
                 instruction = Instruction.Jump(
-                    ringtone=ringtone_id,
-                    volume=volume,
-                    update=1,
+                    target=0,
+                    color=color,
                     repeat=0,
                     on_time=0,
                     off_time=0,
+                    ringtone=ringtone_id,
+                    volume=volume,
+                    update=1,
                 )
-                cmd_buffer.line0 = instruction.value
-                command_bytes = bytes(cmd_buffer)
 
-                self.light.write_strategy(command_bytes)
-                self.light.on(color)
-                self.light.update()
+                # Create command buffer and set the instruction
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
+
+                # Write directly to the device
+                with self.light.batch_update():
+                    self.light.color = color
+                    self.light.command.line0 = instruction.value
             else:
                 # On macOS, use the existing approach that works
-                ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
-
                 instruction = Instruction.Jump(
                     target=0,
                     color=color,
