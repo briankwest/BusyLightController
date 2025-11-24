@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.4.6"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4642,6 +4642,18 @@ class LightController(QObject):
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
                 try:
+                    # On Windows during alert, only refresh the color, not the ringtone
+                    if platform.system() == "Windows" and self.current_status == "alert":
+                        # Just refresh the color to keep the light active
+                        status_colors = self.get_status_colors()
+                        if self.current_status in status_colors:
+                            color = status_colors[self.current_status]
+                            try:
+                                self.light.on(color)
+                            except Exception:
+                                pass
+                        return
+
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
                 except Exception:
@@ -4867,26 +4879,52 @@ class LightController(QObject):
                                 # Only set if still in alert status
                                 if self.current_status == 'alert':
                                     try:
-                                        # Extract the actual ringtone ID from the Ring enum value
+                                        # On Windows, ensure flash timer is completely stopped
+                                        if platform.system() == "Windows":
+                                            if hasattr(self, 'flash_timer') and self.flash_timer:
+                                                if self.flash_timer.isActive():
+                                                    self.flash_timer.stop()
+                                                self.flash_timer.deleteLater()
+                                                self.flash_timer = None
+
+                                        # Extract ringtone ID
                                         ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-                                        # Create instruction with color, ringtone, and volume
-                                        instruction = Instruction.Jump(
-                                            target=0,
-                                            color=color,
-                                            on_time=0,
-                                            off_time=0,
-                                            ringtone=ringtone_id,
-                                            volume=volume,
-                                            update=1,
-                                        )
+                                        if platform.system() == "Windows":
+                                            # On Windows, send ringtone WITHOUT color to avoid interference
+                                            # This matches the MQTT pattern that works correctly
+                                            instruction = Instruction.Jump(
+                                                ringtone=ringtone_id,
+                                                volume=volume,
+                                                update=1,
+                                                repeat=0,
+                                                on_time=0,
+                                                off_time=0,
+                                            )
 
-                                        # Write directly to the device
-                                        with self.light.batch_update():
-                                            self.light.color = color
-                                            self.light.command.line0 = instruction.value
+                                            with self.light.batch_update():
+                                                self.light.command.line0 = instruction.value
 
-                                        # Add keepalive task
+                                            # Set color separately after ringtone command
+                                            self.light.on(color)
+                                        else:
+                                            # On macOS, use the existing approach that works
+                                            instruction = Instruction.Jump(
+                                                target=0,
+                                                color=color,
+                                                on_time=0,
+                                                off_time=0,
+                                                ringtone=ringtone_id,
+                                                volume=volume,
+                                                update=1,
+                                            )
+
+                                            with self.light.batch_update():
+                                                self.light.color = color
+                                                self.light.command.line0 = instruction.value
+
+                                        # Add keepalive task to maintain device state
+                                        # Now safe on Windows since ringtone is separate from color
                                         if hasattr(self.light, 'add_task'):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
@@ -4927,29 +4965,51 @@ class LightController(QObject):
                 return
 
         try:
-            # Extract the actual ringtone ID from the Ring enum value
-            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
+            # Extract ringtone ID
             ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-            # Create instruction with color, ringtone, and volume all together
-            instruction = Instruction.Jump(
-                target=0,
-                color=color,
-                on_time=0,
-                off_time=0,
-                ringtone=ringtone_id,
-                volume=volume,
-                update=1,
-            )
+            if platform.system() == "Windows":
+                # On Windows, send ringtone WITHOUT color to avoid interference
+                # This matches the MQTT pattern that works correctly
+                instruction = Instruction.Jump(
+                    ringtone=ringtone_id,
+                    volume=volume,
+                    update=1,
+                    repeat=0,
+                    on_time=0,
+                    off_time=0,
+                )
 
-            # Create command buffer and set the instruction
-            cmd_buffer = CommandBuffer()
-            cmd_buffer.line0 = instruction.value
+                # Create command buffer and set the instruction
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
 
-            # Write directly to the device
-            with self.light.batch_update():
-                self.light.color = color
-                self.light.command.line0 = instruction.value
+                # Write ringtone command first
+                with self.light.batch_update():
+                    self.light.command.line0 = instruction.value
+
+                # Set color separately after ringtone command
+                self.light.on(color)
+            else:
+                # On macOS, use the existing approach that works
+                instruction = Instruction.Jump(
+                    target=0,
+                    color=color,
+                    on_time=0,
+                    off_time=0,
+                    ringtone=ringtone_id,
+                    volume=volume,
+                    update=1,
+                )
+
+                # Create command buffer and set the instruction
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
+
+                # Write directly to the device
+                with self.light.batch_update():
+                    self.light.color = color
+                    self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
