@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.9"
+APP_VERSION = "1.2.0"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4886,18 +4886,17 @@ class LightController(QObject):
                                         )
 
                                         # Write directly to the device
-                                        # On Windows, write without batch_update to avoid USB timing issues
                                         if platform.system() == "Windows":
+                                            # On Windows, just set color and command WITHOUT update() to avoid interference
                                             self.light.color = color
                                             self.light.command.line0 = instruction.value
-                                            self.light.update()
                                         else:
                                             with self.light.batch_update():
                                                 self.light.color = color
                                                 self.light.command.line0 = instruction.value
 
-                                        # Add keepalive task
-                                        if hasattr(self.light, 'add_task'):
+                                        # Add keepalive task (skip on Windows for ringtones)
+                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
@@ -4957,11 +4956,10 @@ class LightController(QObject):
             cmd_buffer.line0 = instruction.value
 
             # Write directly to the device
-            # On Windows, write without batch_update to avoid USB timing issues
             if platform.system() == "Windows":
+                # On Windows, just set color and command WITHOUT update() to avoid interference
                 self.light.color = color
                 self.light.command.line0 = instruction.value
-                self.light.update()
             else:
                 with self.light.batch_update():
                     self.light.color = color
@@ -4982,8 +4980,8 @@ class LightController(QObject):
                 if not self.effect_timer.isActive():
                     self.effect_timer.start(500)  # Blink every 500ms
 
-            # Add keepalive task for Kuando lights
-            if hasattr(self.light, 'add_task'):
+            # Add keepalive task for Kuando lights (skip on Windows for ringtones)
+            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
                 # Import keepalive function if available
                 try:
                     import asyncio
