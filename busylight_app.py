@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4883,22 +4883,22 @@ class LightController(QObject):
                                         ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
                                         if platform.system() == "Windows":
-                                            # On Windows, use batch_update() with explicit timing parameters
-                                            # Key: set repeat=0, on_time=0, off_time=0 to prevent looping
+                                            # On Windows, send ringtone WITHOUT color to avoid interference
+                                            # This matches the MQTT pattern that works correctly
                                             instruction = Instruction.Jump(
-                                                target=0,
-                                                color=color,
-                                                repeat=0,
-                                                on_time=0,
-                                                off_time=0,
                                                 ringtone=ringtone_id,
                                                 volume=volume,
                                                 update=1,
+                                                repeat=0,
+                                                on_time=0,
+                                                off_time=0,
                                             )
 
                                             with self.light.batch_update():
-                                                self.light.color = color
                                                 self.light.command.line0 = instruction.value
+
+                                            # Set color separately after ringtone command
+                                            self.light.on(color)
                                         else:
                                             # On macOS, use the existing approach that works
                                             instruction = Instruction.Jump(
@@ -4961,27 +4961,27 @@ class LightController(QObject):
             ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
             if platform.system() == "Windows":
-                # On Windows, use batch_update() with explicit timing parameters
-                # Key: set repeat=0, on_time=0, off_time=0 to prevent looping
+                # On Windows, send ringtone WITHOUT color to avoid interference
+                # This matches the MQTT pattern that works correctly
                 instruction = Instruction.Jump(
-                    target=0,
-                    color=color,
-                    repeat=0,
-                    on_time=0,
-                    off_time=0,
                     ringtone=ringtone_id,
                     volume=volume,
                     update=1,
+                    repeat=0,
+                    on_time=0,
+                    off_time=0,
                 )
 
                 # Create command buffer and set the instruction
                 cmd_buffer = CommandBuffer()
                 cmd_buffer.line0 = instruction.value
 
-                # Write directly to the device
+                # Write ringtone command first
                 with self.light.batch_update():
-                    self.light.color = color
                     self.light.command.line0 = instruction.value
+
+                # Set color separately after ringtone command
+                self.light.on(color)
             else:
                 # On macOS, use the existing approach that works
                 instruction = Instruction.Jump(
