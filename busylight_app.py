@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.4.1"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4875,36 +4875,42 @@ class LightController(QObject):
                                                 self.flash_timer.deleteLater()
                                                 self.flash_timer = None
 
-                                        # Hybrid approach: Use library for color, direct buffer for sound only
-                                        # First, set color using library methods
-                                        self.light.color = color
+                                        # Platform-specific ringtone handling
+                                        if platform.system() == "Windows":
+                                            # On Windows, use the MQTT pattern with explicit parameters
+                                            # Key: set repeat=0, on_time=0, off_time=0 to prevent stuttering
+                                            cmd_buffer = CommandBuffer()
+                                            instruction = Instruction.Jump(
+                                                ringtone=ringtone if ringtone else Ring.Off,
+                                                volume=volume,
+                                                update=1,
+                                                repeat=0,
+                                                on_time=0,
+                                                off_time=0,
+                                            )
+                                            cmd_buffer.line0 = instruction.value
+                                            command_bytes = bytes(cmd_buffer)
 
-                                        # Then directly modify the command buffer's sound byte
-                                        # Get the current command buffer bytes
-                                        current_buffer = list(bytes(self.light.command))
-
-                                        # Position 8 in the 65-byte buffer is the sound byte
-                                        # For Kuando devices, the buffer structure is:
-                                        # [0,16,0,0,0,0,0,0,128,...] with RGB at 3,4,5 and sound at 8
-                                        if ringtone != Ring.Off:
-                                            # Set sound: Ring enum value + volume
-                                            current_buffer[8] = ringtone + volume
+                                            self.light.write_strategy(command_bytes)
+                                            self.light.on(color)
+                                            self.light.update()
                                         else:
-                                            current_buffer[8] = 128  # Silence
+                                            # On macOS, use the existing approach that works
+                                            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-                                        # Recalculate checksum
-                                        checksum = sum(current_buffer[0:63])
-                                        current_buffer[63] = (checksum >> 8) & 0xFFFF
-                                        current_buffer[64] = checksum % 256
+                                            instruction = Instruction.Jump(
+                                                target=0,
+                                                color=color,
+                                                on_time=0,
+                                                off_time=0,
+                                                ringtone=ringtone_id,
+                                                volume=volume,
+                                                update=1,
+                                            )
 
-                                        # Write the modified buffer
-                                        try:
-                                            data = bytes(current_buffer)
-                                            if platform.system() == "Windows":
-                                                data = bytes([0x00]) + data
-                                            self.light.device.write(data)
-                                        except Exception as e:
-                                            self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
+                                            with self.light.batch_update():
+                                                self.light.color = color
+                                                self.light.command.line0 = instruction.value
 
                                         # Add keepalive task
                                         if hasattr(self.light, 'add_task'):
@@ -4947,37 +4953,47 @@ class LightController(QObject):
                 return
 
         try:
-            # Hybrid approach: Use library for color, direct buffer for sound only
-            # First, set color using library methods
-            self.light.color = color
+            # Platform-specific ringtone handling
+            if platform.system() == "Windows":
+                # On Windows, use the MQTT pattern with explicit parameters
+                # Key: set repeat=0, on_time=0, off_time=0 to prevent stuttering
+                cmd_buffer = CommandBuffer()
+                instruction = Instruction.Jump(
+                    ringtone=ringtone if ringtone else Ring.Off,
+                    volume=volume,
+                    update=1,
+                    repeat=0,
+                    on_time=0,
+                    off_time=0,
+                )
+                cmd_buffer.line0 = instruction.value
+                command_bytes = bytes(cmd_buffer)
 
-            # Then directly modify the command buffer's sound byte
-            # Get the current command buffer bytes
-            current_buffer = list(bytes(self.light.command))
-
-            # Position 8 in the 65-byte buffer is the sound byte
-            # For Kuando devices, the buffer structure is:
-            # [0,16,0,0,0,0,0,0,128,...] with RGB at 3,4,5 and sound at 8
-            if ringtone != Ring.Off:
-                # Set sound: Ring enum value + volume
-                current_buffer[8] = ringtone + volume
+                self.light.write_strategy(command_bytes)
+                self.light.on(color)
+                self.light.update()
             else:
-                current_buffer[8] = 128  # Silence
+                # On macOS, use the existing approach that works
+                ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
 
-            # Recalculate checksum
-            checksum = sum(current_buffer[0:63])
-            current_buffer[63] = (checksum >> 8) & 0xFFFF
-            current_buffer[64] = checksum % 256
+                instruction = Instruction.Jump(
+                    target=0,
+                    color=color,
+                    on_time=0,
+                    off_time=0,
+                    ringtone=ringtone_id,
+                    volume=volume,
+                    update=1,
+                )
 
-            # Write the modified buffer
-            try:
-                data = bytes(current_buffer)
-                if platform.system() == "Windows":
-                    data = bytes([0x00]) + data
-                self.light.device.write(data)
-            except Exception as e:
-                if log_action:
-                    self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
+                # Create command buffer and set the instruction
+                cmd_buffer = CommandBuffer()
+                cmd_buffer.line0 = instruction.value
+
+                # Write directly to the device
+                with self.light.batch_update():
+                    self.light.color = color
+                    self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
