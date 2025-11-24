@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.3"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4641,10 +4641,6 @@ class LightController(QObject):
 
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
-                # On Windows, don't refresh alert status to avoid restarting ringtones
-                if platform.system() == "Windows" and self.current_status == "alert":
-                    return  # Skip refresh on Windows for alerts
-
                 try:
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
@@ -4871,8 +4867,17 @@ class LightController(QObject):
                                 # Only set if still in alert status
                                 if self.current_status == 'alert':
                                     try:
-                                        # Extract the actual ringtone ID from the Ring enum value
-                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+                                        # On Windows, ensure flash timer is completely stopped
+                                        if platform.system() == "Windows":
+                                            if hasattr(self, 'flash_timer') and self.flash_timer:
+                                                if self.flash_timer.isActive():
+                                                    self.flash_timer.stop()
+                                                self.flash_timer.deleteLater()
+                                                self.flash_timer = None
+
+                                        # Pass Ring enum directly as the library expects
+                                        # The RingtoneField BitField handles bit extraction internally
+                                        ringtone_param = ringtone
 
                                         # Create instruction with color, ringtone, and volume
                                         instruction = Instruction.Jump(
@@ -4880,23 +4885,18 @@ class LightController(QObject):
                                             color=color,
                                             on_time=0,
                                             off_time=0,
-                                            ringtone=ringtone_id,
+                                            ringtone=ringtone_param,
                                             volume=volume,
                                             update=1,
                                         )
 
                                         # Write directly to the device
-                                        if platform.system() == "Windows":
-                                            # On Windows, just set color and command WITHOUT update() to avoid interference
+                                        with self.light.batch_update():
                                             self.light.color = color
                                             self.light.command.line0 = instruction.value
-                                        else:
-                                            with self.light.batch_update():
-                                                self.light.color = color
-                                                self.light.command.line0 = instruction.value
 
-                                        # Add keepalive task (skip on Windows for ringtones)
-                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
+                                        # Add keepalive task
+                                        if hasattr(self.light, 'add_task'):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
@@ -4936,9 +4936,9 @@ class LightController(QObject):
                 return
 
         try:
-            # Extract the actual ringtone ID from the Ring enum value
-            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
-            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+            # Pass Ring enum directly as the library expects
+            # The RingtoneField BitField handles bit extraction internally
+            ringtone_param = ringtone
 
             # Create instruction with color, ringtone, and volume all together
             instruction = Instruction.Jump(
@@ -4946,7 +4946,7 @@ class LightController(QObject):
                 color=color,
                 on_time=0,
                 off_time=0,
-                ringtone=ringtone_id,
+                ringtone=ringtone_param,
                 volume=volume,
                 update=1,
             )
@@ -4956,14 +4956,9 @@ class LightController(QObject):
             cmd_buffer.line0 = instruction.value
 
             # Write directly to the device
-            if platform.system() == "Windows":
-                # On Windows, just set color and command WITHOUT update() to avoid interference
+            with self.light.batch_update():
                 self.light.color = color
                 self.light.command.line0 = instruction.value
-            else:
-                with self.light.batch_update():
-                    self.light.color = color
-                    self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
@@ -4980,8 +4975,8 @@ class LightController(QObject):
                 if not self.effect_timer.isActive():
                     self.effect_timer.start(500)  # Blink every 500ms
 
-            # Add keepalive task for Kuando lights (skip on Windows for ringtones)
-            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
+            # Add keepalive task for Kuando lights
+            if hasattr(self.light, 'add_task'):
                 # Import keepalive function if available
                 try:
                     import asyncio
