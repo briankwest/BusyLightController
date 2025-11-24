@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4641,6 +4641,10 @@ class LightController(QObject):
 
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
+                # On Windows, don't refresh alert status to avoid restarting ringtones
+                if platform.system() == "Windows" and self.current_status == "alert":
+                    return  # Skip refresh on Windows for alerts
+
                 try:
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
@@ -4882,10 +4886,9 @@ class LightController(QObject):
                                         )
 
                                         # Write directly to the device
-                                        # On Windows, add a small delay between color and command to prevent stuttering
+                                        # On Windows, write without batch_update to avoid USB timing issues
                                         if platform.system() == "Windows":
                                             self.light.color = color
-                                            time.sleep(0.01)  # 10ms delay
                                             self.light.command.line0 = instruction.value
                                             self.light.update()
                                         else:
@@ -4954,10 +4957,9 @@ class LightController(QObject):
             cmd_buffer.line0 = instruction.value
 
             # Write directly to the device
-            # On Windows, add a small delay between color and command to prevent stuttering
+            # On Windows, write without batch_update to avoid USB timing issues
             if platform.system() == "Windows":
                 self.light.color = color
-                time.sleep(0.01)  # 10ms delay
                 self.light.command.line0 = instruction.value
                 self.light.update()
             else:
