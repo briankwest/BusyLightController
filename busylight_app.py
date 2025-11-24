@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4642,6 +4642,10 @@ class LightController(QObject):
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
                 try:
+                    # On Windows, skip state refresh during alert status to prevent ringtone stuttering
+                    if platform.system() == "Windows" and self.current_status == "alert":
+                        return
+
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
                 except Exception:
@@ -4911,8 +4915,9 @@ class LightController(QObject):
                                                 self.light.color = color
                                                 self.light.command.line0 = instruction.value
 
-                                        # Add keepalive task
-                                        if hasattr(self.light, 'add_task'):
+                                        # Add keepalive task only on macOS when ringtone is set
+                                        # On Windows, keepalive interferes with ringtone playback
+                                        if platform.system() != "Windows" and hasattr(self.light, 'add_task'):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
