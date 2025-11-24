@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4642,8 +4642,16 @@ class LightController(QObject):
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
                 try:
-                    # On Windows, skip state refresh during alert status to prevent ringtone stuttering
+                    # On Windows during alert, only refresh the color, not the ringtone
                     if platform.system() == "Windows" and self.current_status == "alert":
+                        # Just refresh the color to keep the light active
+                        status_colors = self.get_status_colors()
+                        if self.current_status in status_colors:
+                            color = status_colors[self.current_status]
+                            try:
+                                self.light.on(color)
+                            except Exception:
+                                pass
                         return
 
                     # Reapply the current status to maintain state, but without logging
@@ -4915,9 +4923,9 @@ class LightController(QObject):
                                                 self.light.color = color
                                                 self.light.command.line0 = instruction.value
 
-                                        # Add keepalive task only on macOS when ringtone is set
-                                        # On Windows, keepalive interferes with ringtone playback
-                                        if platform.system() != "Windows" and hasattr(self.light, 'add_task'):
+                                        # Add keepalive task to maintain device state
+                                        # Now safe on Windows since ringtone is separate from color
+                                        if hasattr(self.light, 'add_task'):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
