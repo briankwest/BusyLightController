@@ -4885,9 +4885,6 @@ class LightController(QObject):
     def set_ringtone(self, ringtone_name, volume=5, log_action=True):
         """Set the current ringtone and volume"""
         if ringtone_name in self.RINGTONES:
-            previous_ringtone = self.current_ringtone
-            previous_volume = self.current_volume
-            
             self.current_ringtone = ringtone_name
             self.current_volume = volume
             
