@@ -4881,17 +4881,22 @@ class LightController(QObject):
                                             update=1,
                                         )
 
-                                        # On Windows, add a small delay to allow USB buffer to clear
+                                        # On Windows, remove any existing keepalive task when ringtone is active
                                         if platform.system() == "Windows" and ringtone_id > 0:
-                                            time.sleep(0.05)  # 50ms delay
+                                            if hasattr(self.light, 'remove_task'):
+                                                try:
+                                                    self.light.remove_task("keepalive")
+                                                except Exception:
+                                                    pass
 
-                                        # Write directly to the device - single command only
-                                        # The instruction already contains the color, so no need to set it separately
+                                        # Write directly to the device
                                         with self.light.batch_update():
+                                            self.light.color = color
                                             self.light.command.line0 = instruction.value
 
                                         # Add keepalive task
-                                        if hasattr(self.light, 'add_task'):
+                                        # On Windows, skip keepalive when ringtone is active to prevent interference
+                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone_id > 0):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
@@ -4946,13 +4951,21 @@ class LightController(QObject):
                 update=1,
             )
 
-            # On Windows, add a small delay to allow USB buffer to clear
-            if platform.system() == "Windows" and ringtone_id > 0:
-                time.sleep(0.05)  # 50ms delay
+            # Create command buffer and set the instruction
+            cmd_buffer = CommandBuffer()
+            cmd_buffer.line0 = instruction.value
 
-            # Write directly to the device - single command only
-            # The instruction already contains the color, so no need to set it separately
+            # On Windows, remove any existing keepalive task when ringtone is active
+            if platform.system() == "Windows" and ringtone_id > 0:
+                if hasattr(self.light, 'remove_task'):
+                    try:
+                        self.light.remove_task("keepalive")
+                    except Exception:
+                        pass
+
+            # Write directly to the device
             with self.light.batch_update():
+                self.light.color = color
                 self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
@@ -4971,7 +4984,8 @@ class LightController(QObject):
                     self.effect_timer.start(500)  # Blink every 500ms
 
             # Add keepalive task for Kuando lights
-            if hasattr(self.light, 'add_task'):
+            # On Windows, skip keepalive when ringtone is active to prevent interference
+            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone_id > 0):
                 # Import keepalive function if available
                 try:
                     import asyncio
