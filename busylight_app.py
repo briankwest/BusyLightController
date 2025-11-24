@@ -5715,6 +5715,10 @@ class BusylightApp(QMainWindow):
                 border-radius: 9px;
             }}
         """)
+
+        # Connect volume slider to real-time update
+        self.ringtone_volume_slider_settings.valueChanged.connect(self.update_volume_preview)
+
         busylight_layout.addRow(self.ringtone_volume_label_settings, self.ringtone_volume_slider_settings)
 
         # Test Alert Tone button
@@ -6407,6 +6411,39 @@ class BusylightApp(QMainWindow):
             self.light_controller.set_status(current_status, log_action=False)
 
             # Note: The brightness change is only in memory via QSettings
+            # It will be persisted when user clicks "Apply Settings"
+
+        except Exception as e:
+            # Silently handle errors during preview
+            pass
+
+    def update_volume_preview(self, volume_value):
+        """Update alert tone volume in real-time as slider changes"""
+        try:
+            # Only update if we have a light controller and device
+            if not hasattr(self, 'light_controller') or not self.light_controller:
+                return
+            if not self.light_controller.light:
+                return
+
+            # Temporarily update the volume in QSettings (in memory, not persisted yet)
+            settings = QSettings("Busylight", "BusylightController")
+            settings.setValue("busylight/volume", volume_value)
+
+            # If currently testing the ringtone, update it with new volume
+            # Check if test button shows "Playing..." which means a test is active
+            if hasattr(self, 'test_ringtone_button') and self.test_ringtone_button.text() == "Playing...":
+                # Get current ringtone
+                ringtone_key = self.ringtone_combo_settings.currentData() if hasattr(self, 'ringtone_combo_settings') else None
+                if ringtone_key and ringtone_key in LightController.RINGTONES:
+                    # Temporarily update the controller's volume
+                    self.light_controller.current_volume = volume_value
+
+                    # Re-apply the current status to update the ringtone with new volume
+                    current_status = self.light_controller.current_status
+                    self.light_controller.set_status(current_status, log_action=False)
+
+            # Note: The volume change is only in memory via QSettings
             # It will be persisted when user clicks "Apply Settings"
 
         except Exception as e:
