@@ -4810,7 +4810,6 @@ class LightController(QObject):
             # Create command buffer and set the instruction
             cmd_buffer = CommandBuffer()
             cmd_buffer.line0 = instruction.value
-            command_bytes = bytes(cmd_buffer)
 
             # Write directly to the device
             with self.light.batch_update():
