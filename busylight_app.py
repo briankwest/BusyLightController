@@ -7025,8 +7025,6 @@ class BusylightApp(QMainWindow):
             return
             
         # Show a temporary message
-        original_text = self.device_label.text()
-        original_style = self.device_label.styleSheet()
         self.device_label.setText("Attempting to connect...")
         self.device_label.setStyleSheet("color: blue;")
         
