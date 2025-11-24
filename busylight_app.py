@@ -38,9 +38,6 @@ APP_VERSION = "1.1.4"
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
 
-# User-Agent for API requests
-USER_AGENT = f"BusylightController/{APP_VERSION}"
-
 # UI Text Constants
 APPLY_SETTINGS_BUTTON_TEXT = "Apply Settings"
 APPLY_SETTINGS_BUTTON_TEXT_UPDATING = "Applying Settings..."
