@@ -181,6 +181,108 @@ class QtLogHandler(logging.Handler):
             except Exception:
                 self.handleError(record)
 
+class APIClient:
+    """Centralized API client for status submissions"""
+
+    def __init__(self, username, password, logger_callback=None):
+        """
+        Initialize API client
+
+        Args:
+            username: API username for authentication
+            password: API password for authentication
+            logger_callback: Optional callback function for logging (receives message string)
+        """
+        self.username = username
+        self.password = password
+        self.logger_callback = logger_callback
+        self.api_base_url = "https://busylight.signalwire.me"
+
+    def submit_status(self, status, group, source, reason=None, url=None):
+        """
+        Submit status update to API
+
+        Args:
+            status: Status value (e.g., 'available', 'busy', 'away')
+            group: Group/queue name
+            source: Source identifier (username)
+            reason: Optional reason text
+            url: Optional URL to include (will be auto-prefixed with https://)
+
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        try:
+            # Prepare API request
+            api_url = f"{self.api_base_url}/api/status"
+
+            payload = {
+                'status': status,
+                'source': source,
+                'group': group,
+                'timestamp': get_timestamp()
+            }
+
+            # Add optional fields
+            if reason:
+                payload['reason'] = reason
+
+            if url:
+                # Auto-prepend https:// if missing
+                if not url.startswith(('http://', 'https://')):
+                    url = f'https://{url}'
+                payload['busylight_pop_url'] = url
+
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': USER_AGENT
+            }
+
+            # Make API call with authentication
+            response = requests.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+
+            # Check response
+            if response.status_code == 200:
+                success_msg = f"Status updated successfully for group '{group}'"
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API: {success_msg}")
+                return True, success_msg
+            else:
+                # Try to parse error from response
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}"
+
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API Error: {error_msg}")
+                return False, f"Failed to update status: {error_msg}"
+
+        except requests.exceptions.Timeout:
+            error_msg = "Request timed out. Please try again."
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Request timeout")
+            return False, error_msg
+
+        except requests.exceptions.ConnectionError:
+            error_msg = "Connection failed. Check your network connection."
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Connection failed")
+            return False, error_msg
+
+        except Exception as e:
+            error_msg = f"Unexpected error: {str(e)}"
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: {str(e)}")
+            return False, error_msg
+
 class LogSignalEmitter(QObject):
     """QObject for emitting log signals"""
     log_message = pyqtSignal(str, str)  # message, level
@@ -1654,71 +1756,28 @@ class StatusChangeDialog(QDialog):
         self.accept()
     
     def submit_to_api(self, data):
-        """Submit the status change to the API"""
-        try:
-            # Get parent window to access credentials
-            parent_app = self.parent()
-            if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
-                QMessageBox.warning(self, "API Error", "No authentication credentials available.")
-                return
-            
-            # Prepare API request
-            api_url = "https://busylight.signalwire.me/api/status"
-            
-            payload = {
-                'group': data['group'],
-                'status': data['action'],
-                'reason': data['reason'],
-                'timestamp': get_timestamp(),
-                'source': parent_app.username
-            }
-            
-            headers = {
-                'Content-Type': 'application/json',
-                'User-Agent': USER_AGENT
-            }
+        """Submit the status change to the API using centralized APIClient"""
+        # Get parent window to access credentials
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "API Error", "No authentication credentials available.")
+            return
 
-            # Make API call with authentication
-            response = requests.post(
-                api_url,
-                json=payload,
-                headers=headers,
-                auth=(parent_app.username, parent_app.password),
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                # Success
-                if hasattr(parent_app, 'add_log'):
-                    parent_app.add_log(f"[{get_timestamp()}] API: Status change submitted successfully for group '{data['group']}'")
-            else:
-                # API error
-                error_msg = f"API Error: HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if 'error' in error_data:
-                        error_msg += f" - {error_data['error']}"
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "API Error", f"Failed to submit status change:\n{error_msg}")
-                if hasattr(parent_app, 'add_log'):
-                    parent_app.add_log(f"[{get_timestamp()}] API Error: {error_msg}")
-                    
-        except requests.exceptions.Timeout:
-            QMessageBox.warning(self, "API Error", "Request timed out. Please try again.")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] API Error: Request timed out")
-                
-        except requests.exceptions.ConnectionError:
-            QMessageBox.warning(self, "API Error", "Could not connect to the API server.")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] API Error: Connection failed")
-                
-        except Exception as e:
-            QMessageBox.warning(self, "API Error", f"Unexpected error: {str(e)}")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] API Error: {str(e)}")
+        # Create logger callback
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
+
+        # Create API client and submit
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+        success, message = client.submit_status(
+            status=data['action'],
+            group=data['group'],
+            source=parent_app.username,
+            reason=data['reason']
+        )
+
+        # Show error if failed (success is logged by APIClient)
+        if not success:
+            QMessageBox.warning(self, "API Error", message)
     
     def get_result(self):
         """Return the result data"""
@@ -1915,7 +1974,7 @@ class GroupStatusUpdateDialog(QDialog):
         layout.addLayout(button_layout)
 
     def submit_status(self):
-        """Submit the status update to the API"""
+        """Submit the status update to the API using centralized APIClient"""
         parent_app = self.parent()
         if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
             QMessageBox.warning(self, "API Error", "No authentication credentials available.")
@@ -1925,46 +1984,24 @@ class GroupStatusUpdateDialog(QDialog):
         reason = self.reason_input.text().strip()
         source = self.source_input.text()
 
-        # Prepare API request
-        api_url = "https://busylight.signalwire.me/api/status"
+        # Create logger callback
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
 
-        payload = {
-            'status': status,
-            'source': source,
-            'group': self.group_name,
-            'timestamp': get_timestamp()
-        }
+        # Create API client and submit
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+        success, message = client.submit_status(
+            status=status,
+            group=self.group_name,
+            source=source,
+            reason=reason if reason else None
+        )
 
-        # Add optional reason if provided
-        if reason:
-            payload['reason'] = reason
-
-        headers = {
-            'Content-Type': 'application/json',
-            'User-Agent': USER_AGENT
-        }
-
-        try:
-            # Make API call with authentication
-            response = requests.post(
-                api_url,
-                json=payload,
-                headers=headers,
-                auth=(parent_app.username, parent_app.password),
-                timeout=10
-            )
-
-            # Check response
-            if response.status_code == 200:
-                QMessageBox.information(self, "Success", f"Status updated successfully for group '{self.group_name}'")
-                if hasattr(parent_app, 'add_log'):
-                    parent_app.add_log(f"[{get_timestamp()}] Status update: {status} for {self.group_name} by {source}")
-                self.accept()  # Close dialog
-            else:
-                QMessageBox.warning(self, "API Error", f"Failed to update status: {response.status_code}\n{response.text}")
-
-        except requests.exceptions.RequestException as e:
-            QMessageBox.critical(self, "Network Error", f"Failed to connect to API:\n{str(e)}")
+        # Handle result
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.accept()  # Close dialog
+        else:
+            QMessageBox.warning(self, "API Error", message)
 
 class CustomStatusDialog(QDialog):
     def __init__(self, parent=None):
@@ -2239,80 +2276,32 @@ class CustomStatusDialog(QDialog):
         self.submit_to_api(status, group, source, reason, url)
 
     def submit_to_api(self, status, group, source, reason, url):
-        """Submit the status change to the API"""
-        try:
-            # Get parent window to access credentials
-            parent_app = self.parent()
-            if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
-                QMessageBox.warning(self, "API Error", "No authentication credentials available.")
-                return
+        """Submit the status change to the API using centralized APIClient"""
+        # Get parent window to access credentials
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "API Error", "No authentication credentials available.")
+            return
 
-            # Prepare API request
-            api_url = "https://busylight.signalwire.me/api/status"
+        # Create logger callback
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
 
-            payload = {
-                'status': status,
-                'source': source,
-                'group': group,
-                'timestamp': get_timestamp()
-            }
+        # Create API client and submit
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+        success, message = client.submit_status(
+            status=status,
+            group=group,
+            source=source,
+            reason=reason if reason else None,
+            url=url if url else None
+        )
 
-            # Add optional fields if provided
-            if reason:
-                payload['reason'] = reason
-
-            if url:
-                # Auto-prepend https:// if missing
-                if not url.startswith(('http://', 'https://')):
-                    url = f'https://{url}'
-                payload['busylight_pop_url'] = url
-
-            headers = {
-                'Content-Type': 'application/json',
-                'User-Agent': USER_AGENT
-            }
-
-            # Make API call with authentication
-            response = requests.post(
-                api_url,
-                json=payload,
-                headers=headers,
-                auth=(parent_app.username, parent_app.password),
-                timeout=10
-            )
-
-            # Check response
-            if response.status_code == 200:
-                QMessageBox.information(self, "Success", f"Status updated successfully for group '{group}'")
-                if hasattr(parent_app, 'add_log'):
-                    parent_app.add_log(f"[{get_timestamp()}] Custom status update: {status} for {group} by {source}")
-                self.accept()  # Close dialog
-            else:
-                # Try to parse error from response
-                try:
-                    error_data = response.json()
-                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
-                except:
-                    error_msg = f"HTTP {response.status_code}"
-
-                QMessageBox.warning(self, "API Error", f"Failed to update status: {error_msg}")
-                if hasattr(parent_app, 'add_log'):
-                    parent_app.add_log(f"[{get_timestamp()}] Custom status update failed: {error_msg}")
-
-        except requests.exceptions.Timeout:
-            QMessageBox.warning(self, "API Error", "Request timed out. Please try again.")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] API request timeout")
-
-        except requests.exceptions.ConnectionError:
-            QMessageBox.warning(self, "API Error", "Connection failed. Check your network connection.")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] API connection error")
-
-        except Exception as e:
-            QMessageBox.warning(self, "API Error", f"Unexpected error: {str(e)}")
-            if hasattr(parent_app, 'add_log'):
-                parent_app.add_log(f"[{get_timestamp()}] Custom status API Error: {str(e)}")
+        # Handle result
+        if success:
+            QMessageBox.information(self, "Success", message)
+            self.accept()  # Close dialog
+        else:
+            QMessageBox.warning(self, "API Error", message)
 
 # Analytics Dashboard class
 class AnalyticsDashboard(QDialog):
