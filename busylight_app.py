@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4641,15 +4641,6 @@ class LightController(QObject):
 
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
-                # On Windows, skip refresh for alert status to avoid interrupting ringtone playback
-                if platform.system() == "Windows" and self.current_status == "alert":
-                    # Check if alert tone is enabled
-                    from PySide6.QtCore import QSettings
-                    settings = QSettings("Busylight", "BusylightController")
-                    alert_tone_enabled = settings.value("busylight/alert_tone_enabled", True, type=bool)
-                    if alert_tone_enabled:
-                        return  # Skip refresh to let ringtone play uninterrupted
-
                 try:
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
@@ -4876,26 +4867,34 @@ class LightController(QObject):
                                 # Only set if still in alert status
                                 if self.current_status == 'alert':
                                     try:
-                                        # Create instruction with ringtone and volume ONLY (no target to avoid loop)
-                                        # This matches the CLI implementation that works correctly
+                                        # Extract the actual ringtone ID from the Ring enum value
+                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
+                                        # Create instruction with color, ringtone, and volume
                                         instruction = Instruction.Jump(
-                                            ringtone=ringtone,
+                                            target=0,
+                                            color=color,
+                                            on_time=0,
+                                            off_time=0,
+                                            ringtone=ringtone_id,
                                             volume=volume,
                                             update=1,
                                         )
 
-                                        # Write ringtone instruction then set color separately
-                                        cmd_buffer = CommandBuffer()
-                                        cmd_buffer.line0 = instruction.value
-                                        command_bytes = bytes(cmd_buffer)
-
-                                        self.light.write_strategy(command_bytes)
-                                        self.light.on(color)
-                                        self.light.update()
+                                        # Write directly to the device
+                                        # On Windows, add a small delay between color and command to prevent stuttering
+                                        if platform.system() == "Windows":
+                                            self.light.color = color
+                                            time.sleep(0.01)  # 10ms delay
+                                            self.light.command.line0 = instruction.value
+                                            self.light.update()
+                                        else:
+                                            with self.light.batch_update():
+                                                self.light.color = color
+                                                self.light.command.line0 = instruction.value
 
                                         # Add keepalive task
-                                        # On Windows, skip keepalive when ringtone is active to prevent interference
-                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
+                                        if hasattr(self.light, 'add_task'):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
@@ -4935,22 +4934,36 @@ class LightController(QObject):
                 return
 
         try:
-            # Create instruction with ringtone and volume ONLY (no target to avoid loop)
-            # This matches the CLI implementation that works correctly
+            # Extract the actual ringtone ID from the Ring enum value
+            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
+            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
+            # Create instruction with color, ringtone, and volume all together
             instruction = Instruction.Jump(
-                ringtone=ringtone,
+                target=0,
+                color=color,
+                on_time=0,
+                off_time=0,
+                ringtone=ringtone_id,
                 volume=volume,
                 update=1,
             )
 
-            # Write ringtone instruction then set color separately
+            # Create command buffer and set the instruction
             cmd_buffer = CommandBuffer()
             cmd_buffer.line0 = instruction.value
-            command_bytes = bytes(cmd_buffer)
 
-            self.light.write_strategy(command_bytes)
-            self.light.on(color)
-            self.light.update()
+            # Write directly to the device
+            # On Windows, add a small delay between color and command to prevent stuttering
+            if platform.system() == "Windows":
+                self.light.color = color
+                time.sleep(0.01)  # 10ms delay
+                self.light.command.line0 = instruction.value
+                self.light.update()
+            else:
+                with self.light.batch_update():
+                    self.light.color = color
+                    self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
@@ -4968,8 +4981,7 @@ class LightController(QObject):
                     self.effect_timer.start(500)  # Blink every 500ms
 
             # Add keepalive task for Kuando lights
-            # On Windows, skip keepalive when ringtone is active to prevent interference
-            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
+            if hasattr(self.light, 'add_task'):
                 # Import keepalive function if available
                 try:
                     import asyncio
