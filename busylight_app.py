@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4881,9 +4881,13 @@ class LightController(QObject):
                                             update=1,
                                         )
 
-                                        # Write directly to the device
+                                        # On Windows, add a small delay to allow USB buffer to clear
+                                        if platform.system() == "Windows" and ringtone_id > 0:
+                                            time.sleep(0.05)  # 50ms delay
+
+                                        # Write directly to the device - single command only
+                                        # The instruction already contains the color, so no need to set it separately
                                         with self.light.batch_update():
-                                            self.light.color = color
                                             self.light.command.line0 = instruction.value
 
                                         # Add keepalive task
@@ -4942,13 +4946,13 @@ class LightController(QObject):
                 update=1,
             )
 
-            # Create command buffer and set the instruction
-            cmd_buffer = CommandBuffer()
-            cmd_buffer.line0 = instruction.value
+            # On Windows, add a small delay to allow USB buffer to clear
+            if platform.system() == "Windows" and ringtone_id > 0:
+                time.sleep(0.05)  # 50ms delay
 
-            # Write directly to the device
+            # Write directly to the device - single command only
+            # The instruction already contains the color, so no need to set it separately
             with self.light.batch_update():
-                self.light.color = color
                 self.light.command.line0 = instruction.value
 
             # Apply the effect if one is set
