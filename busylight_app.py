@@ -4601,6 +4601,29 @@ class LightController(QObject):
                 self.reconnect_timer.start(10000)  # Try every 10 seconds
                 self.log_message.emit(f"[{get_timestamp()}] Will try to reconnect every 10 seconds")
     
+    def apply_brightness(self, color):
+        """Apply brightness scaling to a color tuple.
+
+        Args:
+            color: RGB tuple (0-255, 0-255, 0-255)
+
+        Returns:
+            RGB tuple with brightness applied
+        """
+        # Load brightness setting (10-100%)
+        settings = QSettings("Busylight", "BusylightController")
+        brightness = settings.value("busylight/brightness", 100, type=int)
+
+        # Apply brightness as a multiplier (convert percentage to 0.0-1.0)
+        multiplier = brightness / 100.0
+
+        # Scale each RGB component
+        return (
+            int(color[0] * multiplier),
+            int(color[1] * multiplier),
+            int(color[2] * multiplier)
+        )
+
     def set_status(self, status, log_action=False):
         """Set light status with optional logging and UI updates."""
         # Cancel any active flash timer to prevent conflicts when status changes
@@ -4614,6 +4637,9 @@ class LightController(QObject):
         # Always update current status and UI, regardless of physical device availability
         self.current_status = status
         color = self.COLOR_MAP[status]
+
+        # Apply brightness scaling
+        color = self.apply_brightness(color)
 
         # Always emit color changed signal for UI updates (tray icon, status display, etc.)
         self.color_changed.emit(status)
@@ -4671,6 +4697,9 @@ class LightController(QObject):
                 # Convert hex color to RGB tuple
                 flash_color = QColor(flash_color_hex)
                 flash_rgb = (flash_color.red(), flash_color.green(), flash_color.blue())
+
+                # Apply brightness to flash color
+                flash_rgb = self.apply_brightness(flash_rgb)
 
                 # Get speed interval
                 try:
@@ -5876,13 +5905,38 @@ class BusylightApp(QMainWindow):
 
         flash_layout.addRow(self.flash_color_label_settings, flash_color_layout)
 
+        # Test Flash button
+        self.test_flash_button = QPushButton("Test Flash")
+        self.test_flash_button.setToolTip("Preview the flash effect with current settings")
+        self.test_flash_button.clicked.connect(self.test_flash)
+        self.test_flash_button.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['accent_blue']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+                color: {colors['text_primary']};
+            }}
+            QPushButton:pressed {{
+                background: {colors['bg_tertiary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        flash_layout.addRow("", self.test_flash_button)
+
         # Store flash settings widgets for show/hide
         self.flash_settings_widgets = [
             self.flash_speed_label_settings, self.flash_speed_combo_settings,
             self.flash_count_label_settings, flash_count_layout.itemAt(0).widget(),
             flash_count_layout.itemAt(1).widget(),
             self.flash_color_label_settings, self.flash_color_preview_settings,
-            self.flash_color_button_settings
+            self.flash_color_button_settings, self.test_flash_button
         ]
 
         # Connect checkbox to toggle visibility
@@ -5892,6 +5946,66 @@ class BusylightApp(QMainWindow):
         self.toggle_flash_settings_visibility()
 
         layout.addWidget(flash_group)
+
+        # Brightness Configuration Group
+        brightness_group = QGroupBox("Brightness Control")
+        brightness_group.setFont(bold_font)
+        brightness_group.setStyleSheet(group_style)
+        brightness_layout = QFormLayout(brightness_group)
+        brightness_layout.setLabelAlignment(Qt.AlignLeft)
+        brightness_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        brightness_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        brightness_layout.setSpacing(12)
+
+        # Brightness slider
+        brightness_label = QLabel("Brightness:")
+        brightness_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 14px;")
+
+        # Create horizontal layout for slider and value label
+        brightness_slider_layout = QHBoxLayout()
+        self.brightness_slider_settings = QSlider(Qt.Horizontal)
+        self.brightness_slider_settings.setRange(10, 100)  # 10% to 100%
+        self.brightness_slider_settings.setValue(settings.value("busylight/brightness", 100, type=int))
+        self.brightness_slider_settings.setToolTip("Adjust light brightness (10-100%)")
+        self.brightness_slider_settings.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border: 1px solid {colors['input_border']};
+                height: 8px;
+                background: {colors['input_bg']};
+                border-radius: 4px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {colors['accent_blue']};
+                border: none;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }}
+        """)
+
+        # Add value label next to slider showing percentage
+        self.brightness_value_label_settings = QLabel(f"{settings.value('busylight/brightness', 100, type=int)}%")
+        self.brightness_value_label_settings.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 14px; min-width: 40px;")
+
+        # Connect to update label and light in real time
+        def update_brightness_realtime(value):
+            self.brightness_value_label_settings.setText(f"{value}%")
+            self.update_brightness_preview(value)
+
+        self.brightness_slider_settings.valueChanged.connect(update_brightness_realtime)
+
+        brightness_slider_layout.addWidget(self.brightness_slider_settings)
+        brightness_slider_layout.addWidget(self.brightness_value_label_settings)
+
+        brightness_layout.addRow(brightness_label, brightness_slider_layout)
+
+        # Add help text
+        brightness_help = QLabel("Reduce brightness for nighttime use or less distraction")
+        brightness_help.setStyleSheet(f"color: {colors['text_muted']}; font-size: 12px; font-style: italic;")
+        brightness_help.setWordWrap(True)
+        brightness_layout.addRow("", brightness_help)
+
+        layout.addWidget(brightness_group)
 
         # App Configuration Group
         app_group = QGroupBox("Application Settings")
@@ -6275,6 +6389,30 @@ class BusylightApp(QMainWindow):
                 }}
             """)
 
+    def update_brightness_preview(self, brightness_value):
+        """Update the light brightness in real time as slider changes (preview only, not saved)"""
+        try:
+            # Only update if we have a light controller and device
+            if not hasattr(self, 'light_controller') or not self.light_controller:
+                return
+            if not self.light_controller.light:
+                return
+
+            # Temporarily update the brightness in QSettings (in memory, not persisted yet)
+            settings = QSettings("Busylight", "BusylightController")
+            settings.setValue("busylight/brightness", brightness_value)
+
+            # Re-apply current status with the new brightness
+            current_status = self.light_controller.current_status
+            self.light_controller.set_status(current_status, log_action=False)
+
+            # Note: The brightness change is only in memory via QSettings
+            # It will be persisted when user clicks "Apply Settings"
+
+        except Exception as e:
+            # Silently handle errors during preview
+            pass
+
     def test_ringtone(self):
         """Test the selected alert tone by playing it for 3 seconds"""
         try:
@@ -6350,6 +6488,102 @@ class BusylightApp(QMainWindow):
                 self.test_ringtone_button.setEnabled(True)
                 self.test_ringtone_button.setText("Test Alert Tone")
 
+    def test_flash(self):
+        """Test the flash effect with current settings"""
+        try:
+            # Check if device is available
+            if not self.light_controller or not self.light_controller.light:
+                self.add_log(f"[{get_timestamp()}] Busylight device not connected - cannot test flash")
+                QMessageBox.warning(self, "Device Not Connected",
+                                  "Busylight device is not connected. Please connect your device to test the flash.")
+                return
+
+            # Get flash settings from UI
+            flash_speed = self.flash_speed_combo_settings.currentData() if hasattr(self, 'flash_speed_combo_settings') else "medium"
+            flash_count = self.flash_count_slider_settings.value() if hasattr(self, 'flash_count_slider_settings') else 3
+            flash_color = self.current_flash_color if hasattr(self, 'current_flash_color') else QColor("#FFFFFF")
+            flash_rgb = (flash_color.red(), flash_color.green(), flash_color.blue())
+
+            # Apply brightness to flash color
+            flash_rgb = self.light_controller.apply_brightness(flash_rgb)
+
+            # Get alert color (red) with brightness
+            alert_color = self.light_controller.apply_brightness((255, 0, 0))
+
+            # Get speed interval
+            try:
+                from busylight.speed import Speed
+                speed_obj = Speed(flash_speed)
+                interval = speed_obj.duty_cycle
+            except (ValueError, ImportError):
+                interval = 0.5
+
+            self.add_log(f"[{get_timestamp()}] Testing flash: {flash_count} times at {flash_speed} speed")
+
+            # Disable the test button
+            self.test_flash_button.setEnabled(False)
+            self.test_flash_button.setText("Flashing...")
+
+            # Save current light state
+            current_status = self.light_controller.current_status
+            light = self.light_controller.light
+
+            # Flash state tracker
+            flash_state = {'current_flash': 0, 'showing_alert_color': True}
+
+            def toggle_test_flash():
+                try:
+                    if flash_state['showing_alert_color']:
+                        # Switch to flash color
+                        light.on(flash_rgb)
+                        flash_state['showing_alert_color'] = False
+                    else:
+                        # Switch to alert color
+                        light.on(alert_color)
+                        flash_state['showing_alert_color'] = True
+                        flash_state['current_flash'] += 1
+
+                    # Check if test flash is complete
+                    if flash_state['current_flash'] >= flash_count:
+                        # Stop the test flash timer
+                        if hasattr(self, 'test_flash_timer') and self.test_flash_timer:
+                            self.test_flash_timer.stop()
+
+                        # Restore original light state after a short delay
+                        def restore_state():
+                            try:
+                                self.light_controller.set_status(current_status, log_action=False)
+                                self.test_flash_button.setEnabled(True)
+                                self.test_flash_button.setText("Test Flash")
+                                self.add_log(f"[{get_timestamp()}] Flash test completed")
+                            except Exception as e:
+                                self.add_log(f"[{get_timestamp()}] Error restoring state: {e}")
+                                self.test_flash_button.setEnabled(True)
+                                self.test_flash_button.setText("Test Flash")
+
+                        QTimer.singleShot(100, restore_state)
+
+                except Exception as e:
+                    self.add_log(f"[{get_timestamp()}] Error during test flash: {e}")
+                    if hasattr(self, 'test_flash_timer') and self.test_flash_timer:
+                        self.test_flash_timer.stop()
+                    self.test_flash_button.setEnabled(True)
+                    self.test_flash_button.setText("Test Flash")
+
+            # Create and start test flash timer
+            self.test_flash_timer = QTimer(self)
+            self.test_flash_timer.timeout.connect(toggle_test_flash)
+            self.test_flash_timer.start(int(interval * 1000))
+
+            # Start with alert color immediately
+            light.on(alert_color)
+
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error testing flash: {e}")
+            if hasattr(self, 'test_flash_button'):
+                self.test_flash_button.setEnabled(True)
+                self.test_flash_button.setText("Test Flash")
+
     def test_tts_settings_dialog(self):
         """Test TTS from the Settings dialog"""
         try:
@@ -6419,6 +6653,14 @@ class BusylightApp(QMainWindow):
             settings.setValue("busylight/flash_count", flash_count)
         if hasattr(self, 'current_flash_color'):
             settings.setValue("busylight/flash_color", self.current_flash_color.name())
+
+        # Save Brightness settings
+        if hasattr(self, 'brightness_slider_settings'):
+            brightness = self.brightness_slider_settings.value()
+            settings.setValue("busylight/brightness", brightness)
+            # Re-apply current status to update brightness on the light
+            if hasattr(self, 'light_controller') and self.light_controller:
+                self.light_controller.set_status(self.light_controller.current_status, log_action=False)
 
         # Save app settings
         if hasattr(self, 'start_minimized_checkbox'):
