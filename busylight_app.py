@@ -3406,7 +3406,6 @@ class StackedAreaChartWidget(QWidget):
         priority_order = ['P4', 'P3', 'P2', 'P1']
 
         for priority in priority_order:
-            from PySide6.QtGui import QPolygon, QBrush
             polygon_points = []
 
             # Bottom edge (left to right)
