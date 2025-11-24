@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4641,6 +4641,15 @@ class LightController(QObject):
 
             # If we have a light and it's not "off", maintain the state
             if self.light is not None and self.current_status != "off":
+                # On Windows, skip refresh for alert status to avoid interrupting ringtone playback
+                if platform.system() == "Windows" and self.current_status == "alert":
+                    # Check if alert tone is enabled
+                    from PySide6.QtCore import QSettings
+                    settings = QSettings("Busylight", "BusylightController")
+                    alert_tone_enabled = settings.value("busylight/alert_tone_enabled", True, type=bool)
+                    if alert_tone_enabled:
+                        return  # Skip refresh to let ringtone play uninterrupted
+
                 try:
                     # Reapply the current status to maintain state, but without logging
                     self.set_status(self.current_status, log_action=False)
