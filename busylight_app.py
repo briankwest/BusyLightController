@@ -5,25 +5,23 @@ import json
 import sys
 import os
 import platform
-import argparse
 import socket
 import signal
 from datetime import datetime
 import time
 import hashlib
 import redis
-import asyncio
 import requests
 import dotenv
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QLabel, QPushButton, QComboBox, QSystemTrayIcon,
                             QMenu, QTextEdit, QHBoxLayout, QGroupBox, QLineEdit,
                             QDialog, QDialogButtonBox, QFormLayout, QCheckBox,
-                            QFileDialog, QMessageBox, QScrollArea, QSizePolicy, QTabWidget, QGridLayout,
+                            QMessageBox, QScrollArea, QTabWidget,
                             QSplitter, QListWidget, QListWidgetItem, QColorDialog)
 from PySide6.QtCore import Qt, QTimer, Signal as pyqtSignal, QObject, QThread, QSettings, QRect, QPoint, QSize
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QPainter, QPen, QTextCursor, QBrush, QPolygon
-from PySide6.QtWidgets import QSpinBox, QSlider
+from PySide6.QtWidgets import QSlider
 import webbrowser
 from gtts import gTTS
 import pygame
