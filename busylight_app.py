@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.3.0"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4875,24 +4875,32 @@ class LightController(QObject):
                                                 self.flash_timer.deleteLater()
                                                 self.flash_timer = None
 
-                                        # Extract the actual ringtone ID from the Ring enum value
-                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+                                        # Use direct buffer method (from busylite JS implementation)
+                                        # Build 65-byte buffer: [0,16,0,0,0,0,0,0,128] + [0]*50 + [255,255,255,255,6,147]
+                                        buffer = [0, 16, 0, 0, 0, 0, 0, 0, 128] + [0] * 50 + [255, 255, 255, 255, 6, 147]
 
-                                        # Create instruction with color, ringtone, and volume
-                                        instruction = Instruction.Jump(
-                                            target=0,
-                                            color=color,
-                                            on_time=0,
-                                            off_time=0,
-                                            ringtone=ringtone_id,
-                                            volume=volume,
-                                            update=1,
-                                        )
+                                        # Set RGB at positions 3,4,5
+                                        buffer[3] = color[0]  # Red
+                                        buffer[4] = color[1]  # Green
+                                        buffer[5] = color[2]  # Blue
 
-                                        # Set the command and let batch_update handle Windows 0x00 byte
-                                        self.light.command.line0 = instruction.value
-                                        self.light.color = color
-                                        self.light.update()
+                                        # Set sound at position 8 (Ring enum value + volume)
+                                        # Ring enum values are the tone values (e.g., Ring.OpenOffice = 136)
+                                        if ringtone != Ring.Off:
+                                            buffer[8] = ringtone + volume  # Tone + volume (0-7)
+                                        else:
+                                            buffer[8] = 128  # Silence
+
+                                        # Calculate checksum for bytes 0-62 and set bytes 63-64
+                                        checksum = sum(buffer[0:63])
+                                        buffer[63] = (checksum >> 8) & 0xFFFF
+                                        buffer[64] = checksum % 256
+
+                                        # Write buffer directly
+                                        try:
+                                            self.light.device.write(bytes(buffer))
+                                        except Exception as e:
+                                            self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
 
                                         # Add keepalive task
                                         if hasattr(self.light, 'add_task'):
@@ -4935,25 +4943,33 @@ class LightController(QObject):
                 return
 
         try:
-            # Extract the actual ringtone ID from the Ring enum value
-            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
-            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+            # Use direct buffer method (from busylite JS implementation)
+            # Build 65-byte buffer: [0,16,0,0,0,0,0,0,128] + [0]*50 + [255,255,255,255,6,147]
+            buffer = [0, 16, 0, 0, 0, 0, 0, 0, 128] + [0] * 50 + [255, 255, 255, 255, 6, 147]
 
-            # Create instruction with color, ringtone, and volume all together
-            instruction = Instruction.Jump(
-                target=0,
-                color=color,
-                on_time=0,
-                off_time=0,
-                ringtone=ringtone_id,
-                volume=volume,
-                update=1,
-            )
+            # Set RGB at positions 3,4,5
+            buffer[3] = color[0]  # Red
+            buffer[4] = color[1]  # Green
+            buffer[5] = color[2]  # Blue
 
-            # Set the command and let update() handle Windows 0x00 byte prefix
-            self.light.command.line0 = instruction.value
-            self.light.color = color
-            self.light.update()
+            # Set sound at position 8 (Ring enum value + volume)
+            # Ring enum values are the tone values (e.g., Ring.OpenOffice = 136)
+            if ringtone != Ring.Off:
+                buffer[8] = ringtone + volume  # Tone + volume (0-7)
+            else:
+                buffer[8] = 128  # Silence
+
+            # Calculate checksum for bytes 0-62 and set bytes 63-64
+            checksum = sum(buffer[0:63])
+            buffer[63] = (checksum >> 8) & 0xFFFF
+            buffer[64] = checksum % 256
+
+            # Write buffer directly
+            try:
+                self.light.device.write(bytes(buffer))
+            except Exception as e:
+                if log_action:
+                    self.log_message.emit(f"[{get_timestamp()}] Error writing to device: {e}")
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
