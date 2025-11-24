@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4875,31 +4875,31 @@ class LightController(QObject):
                                                 self.flash_timer.deleteLater()
                                                 self.flash_timer = None
 
-                                        # Use direct buffer method (from busylite JS implementation)
-                                        # Build 65-byte buffer: [0,16,0,0,0,0,0,0,128] + [0]*50 + [255,255,255,255,6,147]
-                                        buffer = [0, 16, 0, 0, 0, 0, 0, 0, 128] + [0] * 50 + [255, 255, 255, 255, 6, 147]
+                                        # Hybrid approach: Use library for color, direct buffer for sound only
+                                        # First, set color using library methods
+                                        self.light.color = color
 
-                                        # Set RGB at positions 3,4,5
-                                        buffer[3] = color[0]  # Red
-                                        buffer[4] = color[1]  # Green
-                                        buffer[5] = color[2]  # Blue
+                                        # Then directly modify the command buffer's sound byte
+                                        # Get the current command buffer bytes
+                                        current_buffer = list(bytes(self.light.command))
 
-                                        # Set sound at position 8 (Ring enum value + volume)
-                                        # Ring enum values are the tone values (e.g., Ring.OpenOffice = 136)
+                                        # Position 8 in the 65-byte buffer is the sound byte
+                                        # For Kuando devices, the buffer structure is:
+                                        # [0,16,0,0,0,0,0,0,128,...] with RGB at 3,4,5 and sound at 8
                                         if ringtone != Ring.Off:
-                                            buffer[8] = ringtone + volume  # Tone + volume (0-7)
+                                            # Set sound: Ring enum value + volume
+                                            current_buffer[8] = ringtone + volume
                                         else:
-                                            buffer[8] = 128  # Silence
+                                            current_buffer[8] = 128  # Silence
 
-                                        # Calculate checksum for bytes 0-62 and set bytes 63-64
-                                        checksum = sum(buffer[0:63])
-                                        buffer[63] = (checksum >> 8) & 0xFFFF
-                                        buffer[64] = checksum % 256
+                                        # Recalculate checksum
+                                        checksum = sum(current_buffer[0:63])
+                                        current_buffer[63] = (checksum >> 8) & 0xFFFF
+                                        current_buffer[64] = checksum % 256
 
-                                        # Write buffer directly
-                                        # On Windows, prepend 0x00 byte (required by Windows HID driver)
+                                        # Write the modified buffer
                                         try:
-                                            data = bytes(buffer)
+                                            data = bytes(current_buffer)
                                             if platform.system() == "Windows":
                                                 data = bytes([0x00]) + data
                                             self.light.device.write(data)
@@ -4947,31 +4947,31 @@ class LightController(QObject):
                 return
 
         try:
-            # Use direct buffer method (from busylite JS implementation)
-            # Build 65-byte buffer: [0,16,0,0,0,0,0,0,128] + [0]*50 + [255,255,255,255,6,147]
-            buffer = [0, 16, 0, 0, 0, 0, 0, 0, 128] + [0] * 50 + [255, 255, 255, 255, 6, 147]
+            # Hybrid approach: Use library for color, direct buffer for sound only
+            # First, set color using library methods
+            self.light.color = color
 
-            # Set RGB at positions 3,4,5
-            buffer[3] = color[0]  # Red
-            buffer[4] = color[1]  # Green
-            buffer[5] = color[2]  # Blue
+            # Then directly modify the command buffer's sound byte
+            # Get the current command buffer bytes
+            current_buffer = list(bytes(self.light.command))
 
-            # Set sound at position 8 (Ring enum value + volume)
-            # Ring enum values are the tone values (e.g., Ring.OpenOffice = 136)
+            # Position 8 in the 65-byte buffer is the sound byte
+            # For Kuando devices, the buffer structure is:
+            # [0,16,0,0,0,0,0,0,128,...] with RGB at 3,4,5 and sound at 8
             if ringtone != Ring.Off:
-                buffer[8] = ringtone + volume  # Tone + volume (0-7)
+                # Set sound: Ring enum value + volume
+                current_buffer[8] = ringtone + volume
             else:
-                buffer[8] = 128  # Silence
+                current_buffer[8] = 128  # Silence
 
-            # Calculate checksum for bytes 0-62 and set bytes 63-64
-            checksum = sum(buffer[0:63])
-            buffer[63] = (checksum >> 8) & 0xFFFF
-            buffer[64] = checksum % 256
+            # Recalculate checksum
+            checksum = sum(current_buffer[0:63])
+            current_buffer[63] = (checksum >> 8) & 0xFFFF
+            current_buffer[64] = checksum % 256
 
-            # Write buffer directly
-            # On Windows, prepend 0x00 byte (required by Windows HID driver)
+            # Write the modified buffer
             try:
-                data = bytes(buffer)
+                data = bytes(current_buffer)
                 if platform.system() == "Windows":
                     data = bytes([0x00]) + data
                 self.light.device.write(data)
