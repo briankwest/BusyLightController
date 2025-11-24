@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4876,36 +4876,26 @@ class LightController(QObject):
                                 # Only set if still in alert status
                                 if self.current_status == 'alert':
                                     try:
-                                        # Extract the actual ringtone ID from the Ring enum value
-                                        ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
-
-                                        # Create instruction with color, ringtone, and volume
+                                        # Create instruction with ringtone and volume ONLY (no target to avoid loop)
+                                        # This matches the CLI implementation that works correctly
                                         instruction = Instruction.Jump(
-                                            target=0,
-                                            color=color,
-                                            on_time=0,
-                                            off_time=0,
-                                            ringtone=ringtone_id,
+                                            ringtone=ringtone,
                                             volume=volume,
                                             update=1,
                                         )
 
-                                        # On Windows, remove any existing keepalive task when ringtone is active
-                                        if platform.system() == "Windows" and ringtone_id > 0:
-                                            if hasattr(self.light, 'remove_task'):
-                                                try:
-                                                    self.light.remove_task("keepalive")
-                                                except Exception:
-                                                    pass
+                                        # Write ringtone instruction then set color separately
+                                        cmd_buffer = CommandBuffer()
+                                        cmd_buffer.line0 = instruction.value
+                                        command_bytes = bytes(cmd_buffer)
 
-                                        # Write directly to the device
-                                        with self.light.batch_update():
-                                            self.light.color = color
-                                            self.light.command.line0 = instruction.value
+                                        self.light.write_strategy(command_bytes)
+                                        self.light.on(color)
+                                        self.light.update()
 
                                         # Add keepalive task
                                         # On Windows, skip keepalive when ringtone is active to prevent interference
-                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone_id > 0):
+                                        if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
                                             import asyncio
                                             async def _keepalive(light, interval: int = 0xF) -> None:
                                                 interval = interval & 0x0F
@@ -4945,37 +4935,22 @@ class LightController(QObject):
                 return
 
         try:
-            # Extract the actual ringtone ID from the Ring enum value
-            # Ring enum values encode the ringtone in bits 3-6, so we need to shift right by 3
-            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
-
-            # Create instruction with color, ringtone, and volume all together
+            # Create instruction with ringtone and volume ONLY (no target to avoid loop)
+            # This matches the CLI implementation that works correctly
             instruction = Instruction.Jump(
-                target=0,
-                color=color,
-                on_time=0,
-                off_time=0,
-                ringtone=ringtone_id,
+                ringtone=ringtone,
                 volume=volume,
                 update=1,
             )
 
-            # Create command buffer and set the instruction
+            # Write ringtone instruction then set color separately
             cmd_buffer = CommandBuffer()
             cmd_buffer.line0 = instruction.value
+            command_bytes = bytes(cmd_buffer)
 
-            # On Windows, remove any existing keepalive task when ringtone is active
-            if platform.system() == "Windows" and ringtone_id > 0:
-                if hasattr(self.light, 'remove_task'):
-                    try:
-                        self.light.remove_task("keepalive")
-                    except Exception:
-                        pass
-
-            # Write directly to the device
-            with self.light.batch_update():
-                self.light.color = color
-                self.light.command.line0 = instruction.value
+            self.light.write_strategy(command_bytes)
+            self.light.on(color)
+            self.light.update()
 
             # Apply the effect if one is set
             if self.current_effect == "none" or status == "off":
@@ -4994,7 +4969,7 @@ class LightController(QObject):
 
             # Add keepalive task for Kuando lights
             # On Windows, skip keepalive when ringtone is active to prevent interference
-            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone_id > 0):
+            if hasattr(self.light, 'add_task') and not (platform.system() == "Windows" and ringtone != Ring.Off):
                 # Import keepalive function if available
                 try:
                     import asyncio
