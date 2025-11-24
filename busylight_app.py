@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -4877,11 +4877,13 @@ class LightController(QObject):
 
                                         # Platform-specific ringtone handling
                                         if platform.system() == "Windows":
-                                            # On Windows, use the MQTT pattern with explicit parameters
-                                            # Key: set repeat=0, on_time=0, off_time=0 to prevent stuttering
+                                            # On Windows, use write_strategy() with explicit parameters
+                                            # Extract ringtone ID and set timing parameters explicitly
+                                            ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
                                             cmd_buffer = CommandBuffer()
                                             instruction = Instruction.Jump(
-                                                ringtone=ringtone if ringtone else Ring.Off,
+                                                ringtone=ringtone_id,
                                                 volume=volume,
                                                 update=1,
                                                 repeat=0,
@@ -4955,11 +4957,13 @@ class LightController(QObject):
         try:
             # Platform-specific ringtone handling
             if platform.system() == "Windows":
-                # On Windows, use the MQTT pattern with explicit parameters
-                # Key: set repeat=0, on_time=0, off_time=0 to prevent stuttering
+                # On Windows, use write_strategy() with explicit parameters
+                # Extract ringtone ID and set timing parameters explicitly
+                ringtone_id = (ringtone >> 3) & 0xF if ringtone else 0
+
                 cmd_buffer = CommandBuffer()
                 instruction = Instruction.Jump(
-                    ringtone=ringtone if ringtone else Ring.Off,
+                    ringtone=ringtone_id,
                     volume=volume,
                     update=1,
                     repeat=0,
