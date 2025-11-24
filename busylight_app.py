@@ -1120,16 +1120,6 @@ class ConfigDialog(QDialog):
         self.setup_autostart(self.autostart_checkbox.isChecked())
         
         self.accept()
-        
-    def toggle_token_visibility(self, checked):
-        """Toggle the visibility of the token input field"""
-        print(f"Toggle token visibility: {checked}")
-        if checked:
-            print("Setting to Normal mode")
-            self.redis_token_input.setEchoMode(QLineEdit.Normal)
-        else:
-            print("Setting to Password mode")
-            self.redis_token_input.setEchoMode(QLineEdit.Password)
 
     def test_tts_command(self):
         """Test the text-to-speech functionality using pyttsx3"""
