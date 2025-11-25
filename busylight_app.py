@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -39,6 +39,20 @@ USER_AGENT = f"BusylightController/{APP_VERSION}"
 # UI Text Constants
 APPLY_SETTINGS_BUTTON_TEXT = "Apply Settings"
 APPLY_SETTINGS_BUTTON_TEXT_UPDATING = "Applying Settings..."
+
+# User presence status constants (display only, does not affect busylight)
+USER_STATUS_AVAILABLE = "available"
+USER_STATUS_BUSY = "busy"
+USER_STATUS_AWAY = "away"
+USER_STATUS_OFFLINE = "offline"
+
+# User status display colors (for UI dots, not for busylight hardware)
+USER_STATUS_COLORS = {
+    'available': '#00ff00',  # Green
+    'busy': '#ff0000',       # Red
+    'away': '#ffff00',       # Yellow
+    'offline': '#888888'     # Gray
+}
 
 # Busylight
 try:
@@ -4088,7 +4102,9 @@ class RedisWorker(QObject):
     log_message = pyqtSignal(str)
     ticket_received = pyqtSignal(dict)  # New signal for ticket information
     group_status_updated = pyqtSignal(str, str, dict)  # group, status, full_data
-    
+    user_status_updated = pyqtSignal(str, str, dict)  # username, status, full_data (display only)
+    users_list_received = pyqtSignal(list)  # list of user dicts from API
+
     def __init__(self, redis_info, username=None, parent=None):
         super().__init__(parent)
         self.redis_client = None
@@ -4123,6 +4139,9 @@ class RedisWorker(QObject):
         # Track current status for each group in user_groups
         self.group_statuses = {}
         self.current_overall_status = 'normal'
+
+        # Track all users for user presence status (display only)
+        self.all_users = []  # List of all usernames to subscribe to
 
         # Use Redis info from login response
         if redis_info:
@@ -4323,7 +4342,16 @@ class RedisWorker(QObject):
                     self.pubsub.subscribe(username_channel)
                     self.log_message.emit(f"[{get_timestamp()}] Subscribed to {username_channel}")
 
-                channel_count = len(self.groups) + (1 if self.username else 0)
+                # Subscribe to user presence status channels for all users
+                user_status_count = 0
+                for user in self.all_users:
+                    user_status_channel = f"user_status:{user}"
+                    self.pubsub.subscribe(user_status_channel)
+                    user_status_count += 1
+                if user_status_count > 0:
+                    self.log_message.emit(f"[{get_timestamp()}] Subscribed to {user_status_count} user status channels")
+
+                channel_count = len(self.groups) + (1 if self.username else 0) + user_status_count
                 self.log_message.emit(f"[{get_timestamp()}] Listening for messages on {channel_count} status channels...")
             except Exception as e:
                 self.log_message.emit(f"[{get_timestamp()}] Error subscribing to channels: {e}")
@@ -4349,6 +4377,18 @@ class RedisWorker(QObject):
                         try:
                             data = json.loads(message["data"])
                             channel = message["channel"]
+
+                            # Check if this is a user presence status channel (display only, no light control)
+                            if channel.startswith('user_status:'):
+                                username = channel.replace('user_status:', '')
+                                status = data.get('status', USER_STATUS_OFFLINE)
+                                self.log_message.emit(f"[{get_timestamp()}] User status from {channel}: {status}")
+                                # Emit user status signal (display only, no light control)
+                                self.user_status_updated.emit(username, status, data)
+                                consecutive_errors = 0
+                                continue
+
+                            # Handle group alert status channels (controls busylight)
                             # Extract group name from channel (remove 'status:' prefix)
                             group = channel.replace('status:', '') if channel.startswith('status:') else channel
 
@@ -4499,7 +4539,12 @@ class RedisWorker(QObject):
                 ticket_id = ticket_info['ticket'] if ticket_info['ticket'] else 'URL-only'
                 self.log_message.emit(f"[{get_timestamp()}] Ticket information received: #{ticket_id}")
                 self.ticket_received.emit(ticket_info)
-            
+
+    def set_users_list(self, users):
+        """Set the list of users to subscribe to for presence status updates"""
+        self.all_users = [u['username'] for u in users] if users else []
+        self.log_message.emit(f"[{get_timestamp()}] User list set with {len(self.all_users)} users")
+
     def stop(self):
         self.is_running = False
         self.log_message.emit(f"[{get_timestamp()}] Stopping Redis listener")
@@ -5106,6 +5151,11 @@ class BusylightApp(QMainWindow):
         self.group_widgets = {}
         self.list_item_to_group = {}
         self.group_event_history = {}
+        # User presence status tracking (display only, does not affect busylight)
+        self.user_statuses = {}  # {username: {status, groups, last_update}}
+        self.user_widgets = {}   # {username: {item, dot_label}}
+        self.current_user_status = USER_STATUS_AVAILABLE
+        self.all_users = []  # List of all users from API
         self.redis_worker = None
         self.worker_thread = None
         self.light_controller = None
@@ -5372,14 +5422,54 @@ class BusylightApp(QMainWindow):
                     no_groups_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; padding: 20px;")
                     all_groups_layout.addWidget(no_groups_label)
 
+            # Tab 3: Users (split panel view - display only)
+            users_tab = QWidget()
+            users_layout = QVBoxLayout(users_tab)
+
+            # Create split panel for users
+            self.users_splitter = self.create_users_split_panel_layout(colors)
+            users_layout.addWidget(self.users_splitter)
+
             # Add tabs to the tab widget
             tab_widget.addTab(my_groups_tab, "My Groups")
             tab_widget.addTab(all_groups_tab, "All Groups")
+            tab_widget.addTab(users_tab, "Users")
 
-            # Add Custom Status Update button above tabs
+            # Add Custom Status Update button and My Status selector above tabs
             button_container = QWidget()
             button_layout = QHBoxLayout(button_container)
             button_layout.setContentsMargins(0, 0, 0, 10)
+
+            # My Status label and combo box
+            my_status_label = QLabel("My Status:")
+            my_status_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; font-weight: 600;")
+            button_layout.addWidget(my_status_label)
+
+            self.user_status_combo = QComboBox()
+            self.user_status_combo.addItem("Available", USER_STATUS_AVAILABLE)
+            self.user_status_combo.addItem("Busy", USER_STATUS_BUSY)
+            self.user_status_combo.addItem("Away", USER_STATUS_AWAY)
+            self.user_status_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {colors['input_bg']};
+                    color: {colors['text_primary']};
+                    border: 1px solid {colors['border_secondary']};
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-size: 13px;
+                    min-width: 100px;
+                }}
+                QComboBox:hover {{
+                    border-color: {colors['accent_blue']};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    padding-right: 8px;
+                }}
+            """)
+            self.user_status_combo.currentIndexChanged.connect(self.on_user_status_combo_changed)
+            button_layout.addWidget(self.user_status_combo)
+
             button_layout.addStretch()
 
             custom_status_btn = QPushButton("Status Update...")
@@ -6411,6 +6501,24 @@ class BusylightApp(QMainWindow):
         # Create context menu for the tray
         tray_menu = QMenu()
 
+        # Add "My Status" submenu for user presence status
+        my_status_menu = QMenu("My Status", tray_menu)
+        self.status_action_available = my_status_menu.addAction("Available")
+        self.status_action_available.setCheckable(True)
+        self.status_action_available.setChecked(True)  # Default to Available
+        self.status_action_available.triggered.connect(lambda: self.set_my_status(USER_STATUS_AVAILABLE))
+
+        self.status_action_busy = my_status_menu.addAction("Busy")
+        self.status_action_busy.setCheckable(True)
+        self.status_action_busy.triggered.connect(lambda: self.set_my_status(USER_STATUS_BUSY))
+
+        self.status_action_away = my_status_menu.addAction("Away")
+        self.status_action_away.setCheckable(True)
+        self.status_action_away.triggered.connect(lambda: self.set_my_status(USER_STATUS_AWAY))
+
+        tray_menu.addMenu(my_status_menu)
+        tray_menu.addSeparator()
+
         # Add Custom Status Update action
         custom_status_action = tray_menu.addAction("Custom Status Update...")
         custom_status_action.triggered.connect(self.show_custom_status_dialog)
@@ -7063,6 +7171,9 @@ class BusylightApp(QMainWindow):
         try:
             # Log exit attempt
             print(f"[{get_timestamp()}] Application exit initiated")
+
+            # Send offline status before cleanup
+            self.publish_offline_status()
             
             # Stop the tray blink timer if it's running
             if hasattr(self, 'tray_blink_timer') and self.tray_blink_timer.isActive():
@@ -8126,6 +8237,259 @@ class BusylightApp(QMainWindow):
 
         return splitter
 
+    def create_users_split_panel_layout(self, colors):
+        """Create a split panel view for users - display only with status dots"""
+        # Main splitter container
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("users_panel")
+        splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background: {colors['border_secondary']};
+                width: 2px;
+            }}
+            QSplitter::handle:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        # Left panel: List of users
+        list_widget = QListWidget()
+        list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: {colors['bg_secondary']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
+            QListWidget::item {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+                margin: 1px 0;
+                min-height: 32px;
+            }}
+            QListWidget::item:hover {{
+                background: {colors['hover_bg']};
+                border-radius: 6px;
+            }}
+            QListWidget::item:selected {{
+                background: {colors['accent_blue']};
+                border-radius: 6px;
+            }}
+        """)
+        list_widget.setMinimumWidth(200)
+        list_widget.setMaximumWidth(300)
+
+        # Store reference to list widget for later updates
+        self.users_list_widget = list_widget
+
+        # Right panel: User detail
+        detail_container = QWidget()
+        detail_layout = QVBoxLayout(detail_container)
+        detail_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Header
+        header_label = QLabel("Select a user to view details")
+        header_label.setStyleSheet(f"""
+            color: {colors['text_primary']};
+            font-size: 16px;
+            font-weight: bold;
+            padding: 8px;
+        """)
+        detail_layout.addWidget(header_label)
+
+        # Status info
+        status_info = QLabel("")
+        status_info.setStyleSheet(f"""
+            color: {colors['text_secondary']};
+            font-size: 13px;
+            padding: 4px 8px;
+        """)
+        detail_layout.addWidget(status_info)
+
+        # Groups info
+        groups_label = QLabel("")
+        groups_label.setStyleSheet(f"""
+            color: {colors['text_secondary']};
+            font-size: 13px;
+            padding: 4px 8px;
+        """)
+        groups_label.setWordWrap(True)
+        detail_layout.addWidget(groups_label)
+
+        # Add spacer
+        detail_layout.addStretch()
+
+        # Store references for updates
+        self.users_header_label = header_label
+        self.users_status_info = status_info
+        self.users_groups_label = groups_label
+
+        # Add panels to splitter
+        splitter.addWidget(list_widget)
+        splitter.addWidget(detail_container)
+        splitter.setSizes([250, 750])  # 25% left, 75% right
+
+        # Handle selection changes
+        def on_user_selection_changed():
+            current_item = list_widget.currentItem()
+            if current_item:
+                username = current_item.data(Qt.UserRole)
+                if username:
+                    self.update_users_detail_panel(username)
+
+        list_widget.currentItemChanged.connect(on_user_selection_changed)
+
+        # Populate with initial data if available
+        self.populate_users_list()
+
+        return splitter
+
+    def populate_users_list(self):
+        """Populate the users list widget with all users, grouped by status with headers"""
+        if not hasattr(self, 'users_list_widget'):
+            return
+
+        colors = get_adaptive_colors()
+        self.users_list_widget.clear()
+        self.user_widgets = {}
+
+        # Status priority for sorting (lower number = higher priority / shown first)
+        status_priority = {
+            USER_STATUS_AVAILABLE: 0,
+            USER_STATUS_BUSY: 1,
+            USER_STATUS_AWAY: 2,
+            USER_STATUS_OFFLINE: 3
+        }
+
+        # Status display names for headers
+        status_headers = {
+            USER_STATUS_AVAILABLE: "Available",
+            USER_STATUS_BUSY: "Busy",
+            USER_STATUS_AWAY: "Away",
+            USER_STATUS_OFFLINE: "Offline"
+        }
+
+        # Sort users by status priority first, then alphabetically by display name
+        def get_sort_key(user):
+            username = user.get('username', '')
+            status = self.user_statuses.get(username, {}).get('status', USER_STATUS_OFFLINE)
+            priority = status_priority.get(status, 3)
+            # Use display_name for sorting if available, otherwise username
+            display_name = user.get('display_name', '') or username
+            return (priority, display_name.lower())
+
+        sorted_users = sorted(self.all_users, key=get_sort_key)
+
+        # Track current status section to add headers
+        current_section = None
+        first_selectable_row = None
+
+        for user in sorted_users:
+            username = user.get('username', '')
+            display_name = user.get('display_name', '') or username
+            status = self.user_statuses.get(username, {}).get('status', USER_STATUS_OFFLINE)
+
+            # Add section header if status changed
+            if status != current_section:
+                current_section = status
+                header_text = status_headers.get(status, status.capitalize())
+                status_color = USER_STATUS_COLORS.get(status, USER_STATUS_COLORS['offline'])
+
+                # Create header item
+                header_item = QListWidgetItem()
+                header_item.setSizeHint(QSize(0, 28))
+                header_item.setFlags(Qt.NoItemFlags)  # Make header non-selectable
+                header_item.setData(Qt.UserRole, None)  # No username for headers
+
+                header_widget = QWidget()
+                header_widget.setStyleSheet(f"background: {colors['bg_tertiary']}; border-radius: 4px;")
+                header_layout = QHBoxLayout(header_widget)
+                header_layout.setContentsMargins(8, 4, 8, 4)
+
+                header_label = QLabel(f"— {header_text} —")
+                header_label.setStyleSheet(f"color: {status_color}; font-size: 11px; font-weight: bold; background: transparent;")
+                header_label.setAlignment(Qt.AlignCenter)
+                header_layout.addWidget(header_label)
+
+                self.users_list_widget.addItem(header_item)
+                self.users_list_widget.setItemWidget(header_item, header_widget)
+
+            # Create user item
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 36))
+            item.setData(Qt.UserRole, username)  # Store username for lookup
+
+            # Track first selectable row
+            if first_selectable_row is None:
+                first_selectable_row = self.users_list_widget.count()
+
+            # Create widget with colored dot
+            item_widget = QWidget()
+            item_widget.setStyleSheet("background: transparent;")
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(16, 6, 8, 6)  # Extra left margin for indentation
+            item_layout.setSpacing(8)
+
+            # Status dot
+            dot_label = QLabel("●")
+            color = USER_STATUS_COLORS.get(status, USER_STATUS_COLORS['offline'])
+            dot_label.setStyleSheet(f"color: {color}; font-size: 16px;")
+            dot_label.setAlignment(Qt.AlignCenter)
+            dot_label.setFixedSize(20, 20)
+            item_layout.addWidget(dot_label)
+
+            # Display name (full name if available, otherwise username)
+            name_label = QLabel(display_name)
+            name_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; background: transparent;")
+            item_layout.addWidget(name_label, 1)
+
+            self.users_list_widget.addItem(item)
+            self.users_list_widget.setItemWidget(item, item_widget)
+
+            # Store mapping for status updates
+            self.user_widgets[f"users_{username}"] = {
+                'item': item,
+                'dot_label': dot_label,
+                'username': username,
+                'display_name': display_name
+            }
+
+        # Select first selectable item by default (skip header)
+        if first_selectable_row is not None:
+            self.users_list_widget.setCurrentRow(first_selectable_row)
+
+    def update_users_detail_panel(self, username):
+        """Update the users detail panel with selected user info"""
+        if not hasattr(self, 'users_header_label'):
+            return
+
+        colors = get_adaptive_colors()
+        user_data = self.user_statuses.get(username, {})
+        status = user_data.get('status', USER_STATUS_OFFLINE)
+        groups = user_data.get('groups', [])
+        last_update = user_data.get('last_update', 'Never')
+        display_name = user_data.get('display_name', username)
+
+        # Update header with display name (and username if different)
+        if display_name != username:
+            self.users_header_label.setText(f"User: {display_name} ({username})")
+        else:
+            self.users_header_label.setText(f"User: {username}")
+
+        # Update status with colored indicator
+        status_color = USER_STATUS_COLORS.get(status, USER_STATUS_COLORS['offline'])
+        status_display = status.capitalize() if status else 'Offline'
+        self.users_status_info.setText(f"Status: <span style='color: {status_color};'>●</span> {status_display} | Last Update: {last_update if last_update else 'Never'}")
+
+        # Update groups
+        if groups:
+            groups_text = ", ".join(groups)
+            self.users_groups_label.setText(f"Groups: {groups_text}")
+        else:
+            self.users_groups_label.setText("Groups: None")
+
     def complete_group_click(self, group, widget):
         """Complete the group click with tactile effect"""
         # Get adaptive colors for styling
@@ -8166,18 +8530,224 @@ class BusylightApp(QMainWindow):
         # Open the dialog
         self.on_group_clicked(group)
 
+    def fetch_users_from_api(self):
+        """Fetch list of all users from API for presence status tracking"""
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT
+            }
+            url = "https://busylight.signalwire.me/api/users"
+            response = requests.get(
+                url,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                self.all_users = data.get('users', [])
+                self.add_log(f"[{get_timestamp()}] Fetched {len(self.all_users)} users from API")
+                # Initialize user statuses with current data from API
+                for user in self.all_users:
+                    username = user.get('username', '')
+                    # Build display_name from first_name/last_name if available
+                    # Handle None values from API
+                    first_name = user.get('first_name') or ''
+                    last_name = user.get('last_name') or ''
+                    if first_name or last_name:
+                        display_name = f"{first_name} {last_name}".strip()
+                    else:
+                        display_name = username
+                    # Store display_name in user dict for sorting/display
+                    user['display_name'] = display_name
+                    self.add_log(f"[{get_timestamp()}] User {username}: first='{first_name}', last='{last_name}', display='{display_name}'")
+                    self.user_statuses[username] = {
+                        'status': user.get('status', USER_STATUS_OFFLINE),
+                        'groups': user.get('groups', []),
+                        'last_update': user.get('last_status_update', ''),
+                        'display_name': display_name
+                    }
+                # Populate Users tab if it exists
+                if hasattr(self, 'users_list_widget'):
+                    self.populate_users_list()
+            else:
+                self.add_log(f"[{get_timestamp()}] Failed to fetch users: HTTP {response.status_code}")
+                self.all_users = []
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error fetching users from API: {e}")
+            self.all_users = []
+
+    def update_user_status(self, username, status, data):
+        """Handle user presence status updates from Redis (display only, no light control)"""
+        # Update local cache
+        if username not in self.user_statuses:
+            self.user_statuses[username] = {}
+        old_status = self.user_statuses[username].get('status', USER_STATUS_OFFLINE)
+        self.user_statuses[username]['status'] = status
+        self.user_statuses[username]['last_update'] = data.get('timestamp', get_timestamp())
+
+        self.add_log(f"[{get_timestamp()}] User '{username}' status: {status}")
+
+        # Re-sort and repopulate the users list if status changed (to move user to correct section)
+        if old_status != status and hasattr(self, 'users_list_widget'):
+            # Remember currently selected user
+            selected_username = None
+            if self.users_list_widget.currentItem():
+                selected_username = self.users_list_widget.currentItem().data(Qt.UserRole)
+
+            # Repopulate list (which will re-sort)
+            self.populate_users_list()
+
+            # Restore selection
+            if selected_username:
+                for i in range(self.users_list_widget.count()):
+                    item = self.users_list_widget.item(i)
+                    if item and item.data(Qt.UserRole) == selected_username:
+                        self.users_list_widget.setCurrentRow(i)
+                        break
+        else:
+            # Just update the dot color if status didn't change
+            self.update_user_dot_color(username, status)
+
+        # Update detail panel if this user is selected
+        if hasattr(self, 'users_list_widget') and self.users_list_widget.currentItem():
+            current_key = f"users_{self.users_list_widget.currentItem().data(Qt.UserRole)}"
+            if current_key == f"users_{username}":
+                self.update_users_detail_panel(username)
+
+    def update_user_dot_color(self, username, status):
+        """Update the status dot color for a user in the Users tab"""
+        key = f"users_{username}"
+        if key in self.user_widgets:
+            widget_info = self.user_widgets[key]
+            dot_label = widget_info.get('dot_label')
+            if dot_label:
+                color = USER_STATUS_COLORS.get(status, USER_STATUS_COLORS['offline'])
+                dot_label.setStyleSheet(f"color: {color}; font-size: 16px;")
+
+    def on_user_status_combo_changed(self, index):
+        """Handle user status combo box change"""
+        if hasattr(self, 'user_status_combo'):
+            status = self.user_status_combo.itemData(index)
+            if status:
+                self.set_my_status(status)
+
+    def set_my_status(self, status):
+        """Set the current user's presence status"""
+        if status not in [USER_STATUS_AVAILABLE, USER_STATUS_BUSY, USER_STATUS_AWAY]:
+            self.add_log(f"[{get_timestamp()}] Invalid user status: {status}")
+            return False
+
+        self.current_user_status = status
+
+        # Publish status to API
+        success = self.publish_user_status(status)
+
+        if success:
+            # Update UI elements
+            self.update_status_selector_ui(status)
+            self.update_tray_status_menu(status)
+            self.add_log(f"[{get_timestamp()}] User status changed to: {status}")
+        else:
+            self.add_log(f"[{get_timestamp()}] Failed to publish user status: {status}")
+
+        return success
+
+    def publish_user_status(self, status):
+        """Publish user status to the backend API"""
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT
+            }
+            url = "https://busylight.signalwire.me/api/user_status"
+            payload = {'status': status}
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                self.add_log(f"[{get_timestamp()}] User status published successfully: {status}")
+                return True
+            else:
+                self.add_log(f"[{get_timestamp()}] Failed to publish user status: HTTP {response.status_code}")
+                return False
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error publishing user status: {e}")
+            return False
+
+    def update_status_selector_ui(self, status):
+        """Update the status selector combo box without triggering signals"""
+        if hasattr(self, 'user_status_combo'):
+            # Block signals to prevent recursive calls
+            self.user_status_combo.blockSignals(True)
+            for i in range(self.user_status_combo.count()):
+                if self.user_status_combo.itemData(i) == status:
+                    self.user_status_combo.setCurrentIndex(i)
+                    break
+            self.user_status_combo.blockSignals(False)
+
+    def update_tray_status_menu(self, status):
+        """Update the tray menu status checkmarks"""
+        if hasattr(self, 'status_action_available'):
+            self.status_action_available.setChecked(status == USER_STATUS_AVAILABLE)
+        if hasattr(self, 'status_action_busy'):
+            self.status_action_busy.setChecked(status == USER_STATUS_BUSY)
+        if hasattr(self, 'status_action_away'):
+            self.status_action_away.setChecked(status == USER_STATUS_AWAY)
+
+    def publish_offline_status(self):
+        """Send offline status when application is closing"""
+        try:
+            # Quick synchronous call with short timeout
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT
+            }
+            url = "https://busylight.signalwire.me/api/user_status"
+            payload = {'status': USER_STATUS_OFFLINE}
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=3  # Short timeout for exit
+            )
+
+            if response.status_code == 200:
+                print(f"[{get_timestamp()}] Offline status sent successfully")
+            else:
+                print(f"[{get_timestamp()}] Failed to send offline status: HTTP {response.status_code}")
+        except Exception as e:
+            print(f"[{get_timestamp()}] Could not send offline status: {e}")
+
     def start_redis_worker(self):
         """Start the Redis worker thread"""
         if self.redis_info:
+            # Fetch users list from API before starting worker
+            self.fetch_users_from_api()
+
             # Create Redis worker thread with Redis info from login
             self.worker_thread = QThread()
             self.redis_worker = RedisWorker(redis_info=self.redis_info, username=self.username)
+
+            # Set users list on worker so it can subscribe to user status channels
+            self.redis_worker.set_users_list(self.all_users)
+
             self.redis_worker.moveToThread(self.worker_thread)
             self.redis_worker.status_updated.connect(self.light_controller.set_status)
             self.redis_worker.connection_status.connect(self.update_redis_connection_status)
             self.redis_worker.log_message.connect(self.add_log)
             self.redis_worker.ticket_received.connect(self.process_ticket_info)
             self.redis_worker.group_status_updated.connect(self.update_group_status)
+            self.redis_worker.user_status_updated.connect(self.update_user_status)
             self.worker_thread.started.connect(self.redis_worker.run)
             self.worker_thread.start()
 
@@ -8190,6 +8760,10 @@ class BusylightApp(QMainWindow):
         if hasattr(self, 'apply_button'):
             self.apply_button.setText(APPLY_SETTINGS_BUTTON_TEXT)
             self.apply_button.setEnabled(True)
+
+        # Set user status to Available on login
+        self.set_my_status(USER_STATUS_AVAILABLE)
+        self.add_log(f"[{get_timestamp()}] User status set to Available on login")
 
     def show_analytics_dashboard(self):
         """Switch to the analytics tab"""
