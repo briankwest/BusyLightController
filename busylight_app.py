@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.2.0"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -44,6 +44,7 @@ APPLY_SETTINGS_BUTTON_TEXT_UPDATING = "Applying Settings..."
 USER_STATUS_AVAILABLE = "available"
 USER_STATUS_BUSY = "busy"
 USER_STATUS_AWAY = "away"
+USER_STATUS_BREAK = "break"
 USER_STATUS_OFFLINE = "offline"
 
 # User status display colors (for UI dots, not for busylight hardware)
@@ -51,6 +52,7 @@ USER_STATUS_COLORS = {
     'available': '#00ff00',  # Green
     'busy': '#ff0000',       # Red
     'away': '#ffff00',       # Yellow
+    'break': '#ff9800',      # Orange
     'offline': '#888888'     # Gray
 }
 
@@ -140,6 +142,67 @@ def get_adaptive_colors():
             'button_bg': '#f8f9fa',
             'hover_bg': '#f1f3f4'
         }
+
+class SectionedListWidget(QListWidget):
+    """A QListWidget that prevents dragging items between sections.
+
+    Items must have their section stored in Qt.UserRole + 1 data.
+    Section headers should have Qt.NoItemFlags to prevent selection/dragging.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._dragged_item = None
+        self._dragged_section = None
+
+    def startDrag(self, supportedActions):
+        """Remember which section the dragged item belongs to"""
+        item = self.currentItem()
+        if item:
+            self._dragged_item = item
+            self._dragged_section = item.data(Qt.UserRole + 1)
+        super().startDrag(supportedActions)
+
+    def dropEvent(self, event):
+        """Only allow drops within the same section"""
+        if self._dragged_section is None:
+            event.ignore()
+            return
+
+        # Find the drop position
+        drop_pos = event.position().toPoint()
+        drop_item = self.itemAt(drop_pos)
+
+        # Determine the target section
+        target_section = None
+        if drop_item:
+            target_section = drop_item.data(Qt.UserRole + 1)
+            # If dropping on a header (no section data), find the section below
+            if target_section is None:
+                drop_row = self.row(drop_item)
+                # Look at the next item to determine section
+                for i in range(drop_row + 1, self.count()):
+                    next_item = self.item(i)
+                    next_section = next_item.data(Qt.UserRole + 1)
+                    if next_section:
+                        target_section = next_section
+                        break
+        else:
+            # Dropped at end of list - find the section of the last item
+            if self.count() > 0:
+                last_item = self.item(self.count() - 1)
+                target_section = last_item.data(Qt.UserRole + 1)
+
+        # Only allow drop if same section
+        if target_section == self._dragged_section:
+            super().dropEvent(event)
+        else:
+            event.ignore()
+
+        # Clear drag state
+        self._dragged_item = None
+        self._dragged_section = None
+
 
 # QSS (Qt Style Sheet) Helper Functions
 # These functions provide reusable styling patterns to reduce code duplication
@@ -5394,35 +5457,21 @@ class BusylightApp(QMainWindow):
                 }}
             """)
 
-            # Tab 1: My Groups (split panel view)
-            my_groups_tab = QWidget()
-            my_groups_layout = QVBoxLayout(my_groups_tab)
+            # Tab 1: Groups (combined My Groups and All Groups)
+            groups_tab = QWidget()
+            groups_layout = QVBoxLayout(groups_tab)
 
-            # Create split panel for my groups
-            if self.redis_info and 'groups' in self.redis_info:
-                self.my_groups_splitter = self.create_split_panel_layout(self.redis_info['groups'], colors, "my_groups")
-                my_groups_layout.addWidget(self.my_groups_splitter)
+            # Get user's groups and other groups
+            my_groups = self.redis_info.get('groups', []) if self.redis_info else []
+            all_groups_list = self.redis_info.get('all_groups', []) if self.redis_info else []
+            user_groups_set = set(my_groups)
+            other_groups = [g for g in all_groups_list if g not in user_groups_set]
 
-            # Tab 2: All Groups (split panel view - display only)
-            all_groups_tab = QWidget()
-            all_groups_layout = QVBoxLayout(all_groups_tab)
+            # Create combined split panel for all groups
+            self.groups_splitter = self.create_combined_groups_panel_layout(my_groups, other_groups, colors)
+            groups_layout.addWidget(self.groups_splitter)
 
-            # Create split panel for all groups (excluding user's groups)
-            if 'all_groups' in self.redis_info:
-                user_groups = set(self.redis_info['groups'])
-                other_groups = [g for g in self.redis_info['all_groups'] if g not in user_groups]
-
-                if other_groups:
-                    self.all_groups_splitter = self.create_split_panel_layout(other_groups, colors, "all_groups")
-                    all_groups_layout.addWidget(self.all_groups_splitter)
-                else:
-                    # No other groups message
-                    no_groups_label = QLabel("No other groups available")
-                    no_groups_label.setAlignment(Qt.AlignCenter)
-                    no_groups_label.setStyleSheet(f"color: {colors['text_muted']}; font-style: italic; padding: 20px;")
-                    all_groups_layout.addWidget(no_groups_label)
-
-            # Tab 3: Users (split panel view - display only)
+            # Tab 2: Users (split panel view - display only)
             users_tab = QWidget()
             users_layout = QVBoxLayout(users_tab)
 
@@ -5431,8 +5480,7 @@ class BusylightApp(QMainWindow):
             users_layout.addWidget(self.users_splitter)
 
             # Add tabs to the tab widget
-            tab_widget.addTab(my_groups_tab, "My Groups")
-            tab_widget.addTab(all_groups_tab, "All Groups")
+            tab_widget.addTab(groups_tab, "Groups")
             tab_widget.addTab(users_tab, "Users")
 
             # Add Custom Status Update button and My Status selector above tabs
@@ -5449,6 +5497,7 @@ class BusylightApp(QMainWindow):
             self.user_status_combo.addItem("Available", USER_STATUS_AVAILABLE)
             self.user_status_combo.addItem("Busy", USER_STATUS_BUSY)
             self.user_status_combo.addItem("Away", USER_STATUS_AWAY)
+            self.user_status_combo.addItem("Break", USER_STATUS_BREAK)
             self.user_status_combo.setStyleSheet(f"""
                 QComboBox {{
                     background-color: {colors['input_bg']};
@@ -6515,6 +6564,10 @@ class BusylightApp(QMainWindow):
         self.status_action_away = my_status_menu.addAction("Away")
         self.status_action_away.setCheckable(True)
         self.status_action_away.triggered.connect(lambda: self.set_my_status(USER_STATUS_AWAY))
+
+        self.status_action_break = my_status_menu.addAction("Break")
+        self.status_action_break.setCheckable(True)
+        self.status_action_break.triggered.connect(lambda: self.set_my_status(USER_STATUS_BREAK))
 
         tray_menu.addMenu(my_status_menu)
         tray_menu.addSeparator()
@@ -7653,9 +7706,11 @@ class BusylightApp(QMainWindow):
         if self.redis_info and group in self.redis_info.get('groups', []):
             self.speak_group_status_event(group, status, data)
 
-        # Update colored dots in list items
+        # Update colored dots in list items (both separate and combined panels)
         self.update_group_dot_color(group, status, 'my_groups')
         self.update_group_dot_color(group, status, 'all_groups')
+        self.update_group_dot_color(group, status, 'combined_my')
+        self.update_group_dot_color(group, status, 'combined_all')
 
         # Update detail panel if this group is currently selected
         if group in self.group_widgets:
@@ -7970,6 +8025,10 @@ class BusylightApp(QMainWindow):
 
         # Reason - truncate if too long
         if reason:
+            # Handle case where reason might be a list
+            if isinstance(reason, list):
+                reason = ', '.join(str(r) for r in reason) if reason else ''
+            reason = str(reason)  # Ensure it's a string
             truncated_reason = reason if len(reason) <= 50 else reason[:47] + "..."
             reason_label = QLabel(truncated_reason)
             reason_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
@@ -8237,6 +8296,343 @@ class BusylightApp(QMainWindow):
 
         return splitter
 
+    def create_combined_groups_panel_layout(self, my_groups, other_groups, colors):
+        """Create a combined split panel view for My Groups and All Groups with section headers"""
+        # Main splitter container
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("combined_groups")
+        splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background: {colors['border_secondary']};
+                width: 2px;
+            }}
+            QSplitter::handle:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        # Left panel: List of groups with sections (using custom widget to prevent cross-section dragging)
+        list_widget = SectionedListWidget()
+
+        # Enable drag and drop for reordering
+        list_widget.setDragDropMode(SectionedListWidget.InternalMove)
+        list_widget.setDefaultDropAction(Qt.MoveAction)
+
+        list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background: {colors['bg_secondary']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
+            QListWidget::item {{
+                background: transparent;
+                border: none;
+                padding: 2px;
+                margin: 1px 0;
+                min-height: 32px;
+            }}
+            QListWidget::item:hover {{
+                background: {colors['hover_bg']};
+                border-radius: 6px;
+            }}
+            QListWidget::item:selected {{
+                background: {colors['accent_blue']};
+                border-radius: 6px;
+            }}
+        """)
+        list_widget.setMinimumWidth(200)
+        list_widget.setMaximumWidth(300)
+
+        # Store reference to list widget
+        self.combined_groups_list_widget = list_widget
+
+        # Store mapping of list items to group names for updates
+        if not hasattr(self, 'list_item_to_group'):
+            self.list_item_to_group = {}
+
+        # Track section boundaries for drag constraints
+        self.my_groups_section_start = 0
+        self.my_groups_section_end = 0
+        self.other_groups_section_start = 0
+        self.other_groups_section_end = 0
+
+        # Add "My Groups" section header
+        my_groups_header = QListWidgetItem()
+        my_groups_header.setSizeHint(QSize(0, 28))
+        my_groups_header.setFlags(Qt.NoItemFlags)  # Non-selectable, non-draggable
+        header_widget = QWidget()
+        header_widget.setStyleSheet("background: transparent;")
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_label = QLabel("— My Groups —")
+        header_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px; font-weight: bold;")
+        header_layout.addWidget(header_label)
+        list_widget.addItem(my_groups_header)
+        list_widget.setItemWidget(my_groups_header, header_widget)
+        self.my_groups_section_start = 1  # First group item starts after header
+
+        # Sort my groups by saved order
+        sorted_my_groups = self.get_sorted_groups(my_groups, "my_groups")
+
+        # Add my groups
+        for group in sorted_my_groups:
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 36))
+            item.setData(Qt.UserRole, group)  # Store group name
+            item.setData(Qt.UserRole + 1, "my_groups")  # Store section
+
+            item_widget = QWidget()
+            item_widget.setStyleSheet("background: transparent;")
+            item_widget.setCursor(Qt.OpenHandCursor)
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(4, 6, 8, 6)
+            item_layout.setSpacing(6)
+
+            # Drag handle
+            drag_handle = QLabel("☰")
+            drag_handle.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px;")
+            drag_handle.setAlignment(Qt.AlignLeft)
+            drag_handle.setFixedSize(14, 20)
+            drag_handle.setToolTip("Drag to reorder")
+            item_layout.addWidget(drag_handle)
+
+            # Status dot
+            dot_label = QLabel("●")
+            dot_label.setStyleSheet("color: #00ff00; font-size: 16px;")
+            dot_label.setAlignment(Qt.AlignCenter)
+            dot_label.setFixedSize(20, 20)
+            item_layout.addWidget(dot_label)
+
+            # Group name
+            name_label = QLabel(group)
+            name_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; background: transparent;")
+            item_layout.addWidget(name_label, 1)
+
+            list_widget.addItem(item)
+            list_widget.setItemWidget(item, item_widget)
+
+            # Store mapping for status updates
+            self.list_item_to_group[f"combined_my_{group}"] = {
+                'item': item,
+                'list_widget': list_widget,
+                'dot_label': dot_label,
+                'group': group
+            }
+
+        self.my_groups_section_end = list_widget.count()
+
+        # Add "All Groups" section header
+        all_groups_header = QListWidgetItem()
+        all_groups_header.setSizeHint(QSize(0, 28))
+        all_groups_header.setFlags(Qt.NoItemFlags)  # Non-selectable, non-draggable
+        all_header_widget = QWidget()
+        all_header_widget.setStyleSheet("background: transparent;")
+        all_header_layout = QHBoxLayout(all_header_widget)
+        all_header_layout.setContentsMargins(8, 4, 8, 4)
+        all_header_label = QLabel("— All Groups —")
+        all_header_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px; font-weight: bold;")
+        all_header_layout.addWidget(all_header_label)
+        list_widget.addItem(all_groups_header)
+        list_widget.setItemWidget(all_groups_header, all_header_widget)
+        self.other_groups_section_start = list_widget.count()
+
+        # Sort other groups by saved order
+        sorted_other_groups = self.get_sorted_groups(other_groups, "all_groups")
+
+        # Add other groups
+        for group in sorted_other_groups:
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(0, 36))
+            item.setData(Qt.UserRole, group)  # Store group name
+            item.setData(Qt.UserRole + 1, "all_groups")  # Store section
+
+            item_widget = QWidget()
+            item_widget.setStyleSheet("background: transparent;")
+            item_widget.setCursor(Qt.OpenHandCursor)
+            item_layout = QHBoxLayout(item_widget)
+            item_layout.setContentsMargins(4, 6, 8, 6)
+            item_layout.setSpacing(6)
+
+            # Drag handle
+            drag_handle = QLabel("☰")
+            drag_handle.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 12px;")
+            drag_handle.setAlignment(Qt.AlignLeft)
+            drag_handle.setFixedSize(14, 20)
+            drag_handle.setToolTip("Drag to reorder")
+            item_layout.addWidget(drag_handle)
+
+            # Status dot
+            dot_label = QLabel("●")
+            dot_label.setStyleSheet("color: #00ff00; font-size: 16px;")
+            dot_label.setAlignment(Qt.AlignCenter)
+            dot_label.setFixedSize(20, 20)
+            item_layout.addWidget(dot_label)
+
+            # Group name
+            name_label = QLabel(group)
+            name_label.setStyleSheet(f"color: {colors['text_primary']}; font-size: 13px; background: transparent;")
+            item_layout.addWidget(name_label, 1)
+
+            list_widget.addItem(item)
+            list_widget.setItemWidget(item, item_widget)
+
+            # Store mapping for status updates
+            self.list_item_to_group[f"combined_all_{group}"] = {
+                'item': item,
+                'list_widget': list_widget,
+                'dot_label': dot_label,
+                'group': group
+            }
+
+        self.other_groups_section_end = list_widget.count()
+
+        # Right panel: Event history detail (same as before)
+        detail_container = QWidget()
+        detail_layout = QVBoxLayout(detail_container)
+        detail_layout.setContentsMargins(12, 12, 12, 12)
+
+        # Header
+        combined_header_label = QLabel("Select a group to view details")
+        combined_header_label.setStyleSheet(f"""
+            color: {colors['text_primary']};
+            font-size: 16px;
+            font-weight: bold;
+            padding: 8px;
+        """)
+        detail_layout.addWidget(combined_header_label)
+
+        # Status info
+        combined_status_info = QLabel("")
+        combined_status_info.setStyleSheet(f"""
+            color: {colors['text_secondary']};
+            font-size: 13px;
+            padding: 4px 8px;
+        """)
+        detail_layout.addWidget(combined_status_info)
+
+        # Event history - scrollable area
+        event_scroll = QScrollArea()
+        event_scroll.setWidgetResizable(True)
+        event_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        event_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: {colors['bg_primary']};
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 8px;
+            }}
+            QScrollBar:vertical {{
+                background: {colors['bg_secondary']};
+                width: 10px;
+                border-radius: 5px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {colors['border_secondary']};
+                border-radius: 5px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {colors['accent_blue']};
+            }}
+        """)
+
+        # Container for event cards
+        event_container = QWidget()
+        combined_event_layout = QVBoxLayout(event_container)
+        combined_event_layout.setSpacing(8)
+        combined_event_layout.setContentsMargins(8, 8, 8, 8)
+        combined_event_layout.addStretch()
+
+        event_scroll.setWidget(event_container)
+        detail_layout.addWidget(event_scroll)
+
+        # Add panels to splitter
+        splitter.addWidget(list_widget)
+        splitter.addWidget(detail_container)
+        splitter.setSizes([250, 750])
+
+        # Store references for all groups
+        all_groups = my_groups + other_groups
+        if not hasattr(self, 'group_widgets'):
+            self.group_widgets = {}
+
+        for group in all_groups:
+            self.group_widgets[group] = {
+                'mode': 'split_panel',
+                'widget': splitter,
+                'list_widget': list_widget,
+                'header_label': combined_header_label,
+                'status_info': combined_status_info,
+                'event_detail': combined_event_layout
+            }
+
+        # Handle selection changes
+        def on_combined_selection_changed():
+            current_item = list_widget.currentItem()
+            if current_item:
+                group_name = current_item.data(Qt.UserRole)
+                if group_name and group_name in self.group_widgets:
+                    self.update_detail_panel(group_name, self.group_widgets[group_name])
+                elif group_name:
+                    combined_header_label.setText(f"Group: {group_name}")
+                    combined_status_info.setText("Status: Normal | Last Update: Never")
+                    # Clear event layout
+                    while combined_event_layout.count() > 1:
+                        item = combined_event_layout.takeAt(0)
+                        if item.widget():
+                            item.widget().deleteLater()
+                    no_events_label = QLabel("No events yet...")
+                    no_events_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 13px; padding: 20px;")
+                    no_events_label.setAlignment(Qt.AlignCenter)
+                    combined_event_layout.insertWidget(0, no_events_label)
+
+        list_widget.currentItemChanged.connect(on_combined_selection_changed)
+
+        # Double-click handler - only opens dialog for My Groups
+        def on_combined_double_click(item):
+            group_name = item.data(Qt.UserRole)
+            section = item.data(Qt.UserRole + 1)
+            if group_name and section == "my_groups":
+                dialog = GroupStatusUpdateDialog(group_name, self)
+                dialog.exec()
+
+        list_widget.itemDoubleClicked.connect(on_combined_double_click)
+
+        # Save order when items are reordered
+        def on_combined_rows_moved():
+            self.save_combined_group_order(list_widget)
+
+        list_widget.model().rowsMoved.connect(on_combined_rows_moved)
+
+        # Select first selectable item by default
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if item.flags() & Qt.ItemIsSelectable:
+                list_widget.setCurrentRow(i)
+                break
+
+        return splitter
+
+    def save_combined_group_order(self, list_widget):
+        """Save the order of groups in the combined list, respecting sections"""
+        my_groups_order = []
+        all_groups_order = []
+
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            group_name = item.data(Qt.UserRole)
+            section = item.data(Qt.UserRole + 1)
+            if group_name:
+                if section == "my_groups":
+                    my_groups_order.append(group_name)
+                elif section == "all_groups":
+                    all_groups_order.append(group_name)
+
+        # Save to settings
+        self.settings.setValue("group_order/my_groups", my_groups_order)
+        self.settings.setValue("group_order/all_groups", all_groups_order)
+
     def create_users_split_panel_layout(self, colors):
         """Create a split panel view for users - display only with status dots"""
         # Main splitter container
@@ -8360,7 +8756,8 @@ class BusylightApp(QMainWindow):
             USER_STATUS_AVAILABLE: 0,
             USER_STATUS_BUSY: 1,
             USER_STATUS_AWAY: 2,
-            USER_STATUS_OFFLINE: 3
+            USER_STATUS_BREAK: 3,
+            USER_STATUS_OFFLINE: 4
         }
 
         # Status display names for headers
@@ -8368,6 +8765,7 @@ class BusylightApp(QMainWindow):
             USER_STATUS_AVAILABLE: "Available",
             USER_STATUS_BUSY: "Busy",
             USER_STATUS_AWAY: "Away",
+            USER_STATUS_BREAK: "Break",
             USER_STATUS_OFFLINE: "Offline"
         }
 
@@ -8375,7 +8773,7 @@ class BusylightApp(QMainWindow):
         def get_sort_key(user):
             username = user.get('username', '')
             status = self.user_statuses.get(username, {}).get('status', USER_STATUS_OFFLINE)
-            priority = status_priority.get(status, 3)
+            priority = status_priority.get(status, 4)
             # Use display_name for sorting if available, otherwise username
             display_name = user.get('display_name', '') or username
             return (priority, display_name.lower())
@@ -8589,6 +8987,12 @@ class BusylightApp(QMainWindow):
 
         self.add_log(f"[{get_timestamp()}] User '{username}' status: {status}")
 
+        # If this is the current user, update the My Status UI elements
+        if username == self.username:
+            self.current_user_status = status
+            self.update_status_selector_ui(status)
+            self.update_tray_status_menu(status)
+
         # Re-sort and repopulate the users list if status changed (to move user to correct section)
         if old_status != status and hasattr(self, 'users_list_widget'):
             # Remember currently selected user
@@ -8635,7 +9039,7 @@ class BusylightApp(QMainWindow):
 
     def set_my_status(self, status):
         """Set the current user's presence status"""
-        if status not in [USER_STATUS_AVAILABLE, USER_STATUS_BUSY, USER_STATUS_AWAY]:
+        if status not in [USER_STATUS_AVAILABLE, USER_STATUS_BUSY, USER_STATUS_AWAY, USER_STATUS_BREAK]:
             self.add_log(f"[{get_timestamp()}] Invalid user status: {status}")
             return False
 
@@ -8701,6 +9105,8 @@ class BusylightApp(QMainWindow):
             self.status_action_busy.setChecked(status == USER_STATUS_BUSY)
         if hasattr(self, 'status_action_away'):
             self.status_action_away.setChecked(status == USER_STATUS_AWAY)
+        if hasattr(self, 'status_action_break'):
+            self.status_action_break.setChecked(status == USER_STATUS_BREAK)
 
     def publish_offline_status(self):
         """Send offline status when application is closing"""

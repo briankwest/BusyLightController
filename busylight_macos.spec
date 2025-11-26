@@ -63,7 +63,7 @@ app = BUNDLE(
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
-        'CFBundleShortVersionString': '1.1.4',
+        'CFBundleShortVersionString': '1.1.6',
         'LSUIElement': '1',  # Makes the app not show in dock
     },
 )
