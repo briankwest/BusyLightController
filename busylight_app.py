@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.2"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -2202,6 +2202,7 @@ class GroupStatusUpdateDialog(QDialog):
         button_layout.addWidget(cancel_btn)
 
         submit_btn = QPushButton("Update Status")
+        submit_btn.setDefault(True)  # Allow Enter key to trigger this button
         submit_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {colors['accent_blue']};
@@ -5521,26 +5522,6 @@ class BusylightApp(QMainWindow):
 
             button_layout.addStretch()
 
-            custom_status_btn = QPushButton("Status Update...")
-            custom_status_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {colors['accent_blue']};
-                    color: {colors['bg_primary']};
-                    border: none;
-                    padding: 10px 20px;
-                    border-radius: 6px;
-                    font-weight: 600;
-                    font-size: 14px;
-                    min-width: 180px;
-                }}
-                QPushButton:hover {{
-                    background-color: {colors['hover_bg']};
-                }}
-            """)
-            custom_status_btn.setToolTip("Set status on any queue or group")
-            custom_status_btn.clicked.connect(self.show_custom_status_dialog)
-            button_layout.addWidget(custom_status_btn)
-
             groups_main_layout.addWidget(button_container)
             groups_main_layout.addWidget(tab_widget)
             groups_main.setLayout(groups_main_layout)
@@ -8589,11 +8570,11 @@ class BusylightApp(QMainWindow):
 
         list_widget.currentItemChanged.connect(on_combined_selection_changed)
 
-        # Double-click handler - only opens dialog for My Groups
+        # Double-click handler - opens dialog for both My Groups and All Groups
         def on_combined_double_click(item):
             group_name = item.data(Qt.UserRole)
             section = item.data(Qt.UserRole + 1)
-            if group_name and section == "my_groups":
+            if group_name and section in ("my_groups", "all_groups"):
                 dialog = GroupStatusUpdateDialog(group_name, self)
                 dialog.exec()
 
