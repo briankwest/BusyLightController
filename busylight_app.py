@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -46,6 +46,10 @@ USER_STATUS_BUSY = "busy"
 USER_STATUS_AWAY = "away"
 USER_STATUS_BREAK = "break"
 USER_STATUS_OFFLINE = "offline"
+
+# Status keepalive interval in milliseconds (30 minutes = 1800 seconds)
+# Server-side timeout is 3600 seconds, so we refresh at half that interval
+STATUS_KEEPALIVE_INTERVAL_MS = 1800 * 1000
 
 # User status display colors (for UI dots, not for busylight hardware)
 USER_STATUS_COLORS = {
@@ -5266,6 +5270,10 @@ class BusylightApp(QMainWindow):
         self.tray_blink_timer = QTimer(self)
         self.tray_blink_timer.timeout.connect(self.toggle_tray_icon)
         self.tray_icon_visible = True
+
+        # Initialize status keepalive timer (started after login completes)
+        self.status_keepalive_timer = QTimer(self)
+        self.status_keepalive_timer.timeout.connect(self.on_status_keepalive)
         
         # Initialize the light controller first
         self.light_controller = LightController(self)
@@ -9089,6 +9097,16 @@ class BusylightApp(QMainWindow):
         if hasattr(self, 'status_action_break'):
             self.status_action_break.setChecked(status == USER_STATUS_BREAK)
 
+    def on_status_keepalive(self):
+        """Periodically re-publish current status to keep it alive on the server.
+
+        The server-side status has a 3600 second timeout, so we refresh every 1800 seconds
+        to prevent the user from appearing offline on the wallboard while still active.
+        """
+        if self.current_user_status and self.current_user_status != USER_STATUS_OFFLINE:
+            self.add_log(f"[{get_timestamp()}] Status keepalive: refreshing '{self.current_user_status}'")
+            self.publish_user_status(self.current_user_status)
+
     def publish_offline_status(self):
         """Send offline status when application is closing"""
         try:
@@ -9151,6 +9169,10 @@ class BusylightApp(QMainWindow):
         # Set user status to Available on login
         self.set_my_status(USER_STATUS_AVAILABLE)
         self.add_log(f"[{get_timestamp()}] User status set to Available on login")
+
+        # Start the status keepalive timer to prevent server-side timeout
+        self.status_keepalive_timer.start(STATUS_KEEPALIVE_INTERVAL_MS)
+        self.add_log(f"[{get_timestamp()}] Status keepalive timer started (interval: {STATUS_KEEPALIVE_INTERVAL_MS // 1000}s)")
 
     def show_analytics_dashboard(self):
         """Switch to the analytics tab"""
