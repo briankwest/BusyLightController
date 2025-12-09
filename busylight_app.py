@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -5244,6 +5244,12 @@ class BusylightApp(QMainWindow):
         # Flag to prevent TTS during app initialization
         self.is_initializing = True
 
+        # Flag to prevent TTS during Redis reconnection
+        self.is_reconnecting = False
+
+        # Store the last known group status before disconnection for restoration
+        self.last_known_overall_status = None
+
         # Initialize TTS manager
         self.tts_manager = TTSManager(self)
         self.tts_manager.tts_completed.connect(
@@ -7508,11 +7514,11 @@ class BusylightApp(QMainWindow):
             self.show_and_raise()
 
     def update_redis_connection_status(self, status):
-        """Update the Redis connection status in the UI and log"""
+        """Update the Redis connection status in the UI, log, and busylight"""
         if hasattr(self, 'redis_connection_label'):
             # Get adaptive colors for styling
             colors = get_adaptive_colors()
-            
+
             if status == "connected":
                 self.redis_connection_label.setText("Connected")
                 self.redis_connection_label.setStyleSheet(f"color: {colors['accent_green']}; font-weight: 500; font-size: 13px;")
@@ -7522,8 +7528,26 @@ class BusylightApp(QMainWindow):
                     self.redis_connection_dot.setToolTip("Connected")
                 self.add_log(f"[{get_timestamp()}] Redis connected")
 
-                # Load all existing events from Redis
+                # If we were reconnecting, restore previous status and clear flag
+                if self.is_reconnecting:
+                    self.add_log(f"[{get_timestamp()}] Reconnection complete, restoring status")
+                    # Restore the last known overall status (or default to normal)
+                    restore_status = self.last_known_overall_status or 'normal'
+                    self.light_controller.set_status(restore_status)
+                    self.add_log(f"[{get_timestamp()}] Restored busylight to '{restore_status}'")
+
+                # Set reconnecting flag before loading events to suppress TTS
+                was_reconnecting = self.is_reconnecting
+                if was_reconnecting:
+                    # Keep is_reconnecting True during event loading to suppress TTS
+                    pass
+
+                # Load all existing events from Redis (with TTS suppressed if reconnecting)
                 QTimer.singleShot(500, self.load_existing_redis_events)
+
+                # Clear the reconnecting flag after events are loaded
+                if was_reconnecting:
+                    QTimer.singleShot(1000, self.clear_reconnecting_flag)
             else:
                 self.redis_connection_label.setText("Disconnected")
                 self.redis_connection_label.setStyleSheet(f"color: {colors['accent_red']}; font-weight: 500; font-size: 13px;")
@@ -7532,6 +7556,23 @@ class BusylightApp(QMainWindow):
                     self.redis_connection_dot.setStyleSheet(f"font-size: 18px; color: {colors['accent_red']}; font-weight: bold;")
                     self.redis_connection_dot.setToolTip("Disconnected")
                 self.add_log(f"[{get_timestamp()}] Redis disconnected")
+
+                # Save the current status before setting to error
+                if self.light_controller.current_status and self.light_controller.current_status != 'error':
+                    self.last_known_overall_status = self.light_controller.current_status
+                    self.add_log(f"[{get_timestamp()}] Saved current status '{self.last_known_overall_status}' before disconnect")
+
+                # Set the reconnecting flag to suppress TTS on reconnection
+                self.is_reconnecting = True
+
+                # Set busylight and tray to error (purple) to indicate connection problem
+                self.light_controller.set_status('error')
+                self.add_log(f"[{get_timestamp()}] Busylight set to error (purple) due to connection loss")
+
+    def clear_reconnecting_flag(self):
+        """Clear the reconnecting flag after event loading is complete"""
+        self.is_reconnecting = False
+        self.add_log(f"[{get_timestamp()}] Reconnection event loading complete, TTS re-enabled")
 
     def toggle_tray_icon(self):
         """Toggle the tray icon visibility"""
@@ -7563,6 +7604,10 @@ class BusylightApp(QMainWindow):
     
     def speak_ticket_summary(self, summary):
         """Speak the ticket summary using pyttsx3"""
+        # Skip TTS during reconnection to avoid re-announcing old events
+        if self.is_reconnecting:
+            return
+
         # Load TTS settings
         settings = QSettings("Busylight", "BusylightController")
         tts_enabled = settings.value("tts/enabled", False, type=bool)
@@ -7583,6 +7628,10 @@ class BusylightApp(QMainWindow):
         """Speak group status events using pyttsx3"""
         # Skip TTS during app initialization to avoid speaking historical events
         if self.is_initializing:
+            return
+
+        # Skip TTS during reconnection to avoid re-announcing old events
+        if self.is_reconnecting:
             return
 
         # Load TTS settings
@@ -7621,6 +7670,10 @@ class BusylightApp(QMainWindow):
         """Open the ticket URL using a secure method"""
         # Skip URL opening during app initialization to avoid opening historical URLs
         if self.is_initializing:
+            return
+
+        # Skip URL opening during reconnection to avoid opening old URLs
+        if self.is_reconnecting:
             return
 
         # Load URL settings

@@ -10,7 +10,7 @@ import shutil
 from datetime import datetime
 
 APP_NAME = "BLASST Controller"
-APP_VERSION = "1.2.2"  # Update this as needed
+APP_VERSION = "1.2.4"  # Update this as needed
 ICON_FILE = "icon.png"  # Ensure this exists
 MAIN_SCRIPT = "busylight_app_main.py"
 COMPANY_NAME = "SignalWire"
