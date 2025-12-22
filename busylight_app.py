@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.3.0"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -526,6 +526,164 @@ class APIClient:
 
         except requests.exceptions.ConnectionError:
             error_msg = "Connection failed. Check your network connection."
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Connection failed")
+            return False, error_msg
+
+        except Exception as e:
+            error_msg = f"Unexpected error: {str(e)}"
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: {str(e)}")
+            return False, error_msg
+
+    def acknowledge_event(self, event_id):
+        """
+        Acknowledge an event by ID
+
+        Args:
+            event_id: UUID of the event to acknowledge
+
+        Returns:
+            tuple: (success: bool, response_data: dict or error message: str)
+        """
+        return self._update_event(event_id, 'acknowledge')
+
+    def resolve_event(self, event_id, note=None):
+        """
+        Resolve an event by ID
+
+        Args:
+            event_id: UUID of the event to resolve
+            note: Optional resolution note
+
+        Returns:
+            tuple: (success: bool, response_data: dict or error message: str)
+        """
+        return self._update_event(event_id, 'resolve', note)
+
+    def _update_event(self, event_id, action, note=None):
+        """
+        Internal method to update event state
+
+        Args:
+            event_id: UUID of the event
+            action: 'acknowledge' or 'resolve'
+            note: Optional note (mainly for resolve)
+
+        Returns:
+            tuple: (success: bool, response_data: dict or error message: str)
+        """
+        try:
+            url = f"{self.api_base_url}/api/events/{event_id}"
+            payload = {'action': action}
+            if note:
+                payload['note'] = note
+
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': USER_AGENT
+            }
+
+            response = requests.patch(
+                url,
+                json=payload,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                response_data = response.json()
+                success_msg = f"Event {event_id} {action}d successfully"
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API: {success_msg}")
+                return True, response_data
+            else:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}"
+
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API Error: {error_msg}")
+                return False, error_msg
+
+        except requests.exceptions.Timeout:
+            error_msg = "Request timed out. Please try again."
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Request timeout")
+            return False, error_msg
+
+        except requests.exceptions.ConnectionError:
+            error_msg = "Connection failed. Check your network connection."
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Connection failed")
+            return False, error_msg
+
+        except Exception as e:
+            error_msg = f"Unexpected error: {str(e)}"
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: {str(e)}")
+            return False, error_msg
+
+    def get_events(self, group=None, state=None, limit=50):
+        """
+        Fetch events from the API
+
+        Args:
+            group: Optional group name to filter by
+            state: Optional state filter ('new', 'acknowledged', 'resolved', 'unresolved')
+            limit: Maximum number of events to return (default 50)
+
+        Returns:
+            tuple: (success: bool, events_list: list or error_msg: str)
+        """
+        try:
+            url = f"{self.api_base_url}/api/events"
+            params = {'limit': limit}
+            if group:
+                params['group'] = group
+            if state:
+                params['state'] = state
+
+            headers = {
+                'User-Agent': USER_AGENT
+            }
+
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                response_data = response.json()
+                events = response_data.get('events', [])
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API: Fetched {len(events)} events")
+                return True, events
+            else:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}"
+
+                if self.logger_callback:
+                    self.logger_callback(f"[{get_timestamp()}] API Error: {error_msg}")
+                return False, error_msg
+
+        except requests.exceptions.Timeout:
+            error_msg = "Request timed out"
+            if self.logger_callback:
+                self.logger_callback(f"[{get_timestamp()}] API Error: Request timeout")
+            return False, error_msg
+
+        except requests.exceptions.ConnectionError:
+            error_msg = "Connection failed"
             if self.logger_callback:
                 self.logger_callback(f"[{get_timestamp()}] API Error: Connection failed")
             return False, error_msg
@@ -2256,6 +2414,403 @@ class GroupStatusUpdateDialog(QDialog):
             self.accept()  # Close dialog
         else:
             QMessageBox.warning(self, "API Error", message)
+
+
+class EventActionDialog(QDialog):
+    """Dialog for viewing event details and taking actions (acknowledge/resolve)"""
+
+    # Priority colors (based on original event priority)
+    PRIORITY_COLORS = {
+        'alert': '#f44336',       # Red - Critical (p0/p1)
+        'alert-acked': '#f44336', # Red - Was critical
+        'warning': '#ffeb3b',     # Yellow - Warning (p2+)
+        'normal': '#4caf50',      # Green - Normal
+        'error': '#9c27b0'        # Purple - Error
+    }
+
+    # State badge colors (workflow state)
+    STATE_COLORS = {
+        'new': '#f44336',         # Red - needs attention
+        'acknowledged': '#ff9800', # Orange - being worked on
+        'resolved': '#4caf50'     # Green - done
+    }
+
+    def __init__(self, event_data, parent=None):
+        super().__init__(parent)
+        self.event_data = event_data
+        self.data = event_data.get('data', {})
+        self.event_id = self.data.get('event_id')
+        self.current_state = self.data.get('state', 'new')
+        self.setWindowTitle("Event Details")
+        self.setModal(True)
+        self.resize(600, 500)
+        self.setup_ui()
+
+    def setup_ui(self):
+        colors = get_adaptive_colors()
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Set dialog background
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+
+        # Parse event data
+        status = self.event_data.get('status', 'normal')
+        timestamp = self.data.get('timestamp', '')
+        source = self.data.get('source', 'Unknown')
+        reason = self.data.get('reason', '')
+        ticket = self.data.get('ticket', '')
+        summary = self.data.get('summary', '')
+        url = self.data.get('busylight_pop_url', '')
+        group = self.data.get('group', '')
+
+        # State tracking info
+        acknowledged_by = self.data.get('acknowledged_by', '')
+        acknowledged_at = self.data.get('acknowledged_at', '')
+        resolved_by = self.data.get('resolved_by', '')
+        resolved_at = self.data.get('resolved_at', '')
+        resolution_note = self.data.get('resolution_note', '')
+
+        # Format timestamp
+        if 'T' in timestamp and '.' in timestamp:
+            timestamp = timestamp.split('.')[0].replace('T', ' ')
+
+        # Header with priority indicator and state badge
+        header_layout = QHBoxLayout()
+
+        # Priority indicator (colored bar showing original priority)
+        priority_color = self.PRIORITY_COLORS.get(status, '#4caf50')
+        priority_label = QLabel(f"Priority: {status.upper()}")
+        text_color = "black" if status == 'warning' else "white"
+        priority_label.setStyleSheet(f"""
+            background: {priority_color};
+            color: {text_color};
+            padding: 6px 16px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        """)
+        header_layout.addWidget(priority_label)
+
+        header_layout.addStretch()
+
+        # State badge (workflow state: NEW, ACKNOWLEDGED, RESOLVED)
+        state_color = self.STATE_COLORS.get(self.current_state, '#888')
+        state_badge = QLabel(self.current_state.upper())
+        state_badge.setStyleSheet(f"""
+            background: {state_color};
+            color: white;
+            padding: 6px 16px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        """)
+        header_layout.addWidget(state_badge)
+
+        layout.addLayout(header_layout)
+
+        # Scroll area for content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+
+        def add_field(label_text, value_text, is_link=False):
+            if not value_text:
+                return
+            label = QLabel(label_text)
+            label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px; font-weight: bold;")
+            content_layout.addWidget(label)
+
+            if is_link:
+                full_url = value_text if value_text.startswith('http') else f"https://{value_text}"
+                value = QLabel(f'<a href="{full_url}" style="color: {colors["accent_blue"]};">{full_url}</a>')
+                value.setOpenExternalLinks(True)
+                value.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            else:
+                value = QLabel(str(value_text))
+                value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            value.setWordWrap(True)
+            value.setStyleSheet(f"""
+                color: {colors['text_primary']};
+                font-size: 13px;
+                padding: 6px 10px;
+                background: {colors['bg_secondary']};
+                border-radius: 4px;
+            """)
+            content_layout.addWidget(value)
+
+        # Basic event info
+        add_field("Group", group)
+        add_field("Time", timestamp)
+        add_field("Source", source)
+        if reason:
+            add_field("Reason", reason)
+        if ticket:
+            add_field("Ticket", ticket)
+        if summary:
+            add_field("Summary", summary)
+        if url:
+            add_field("URL", url, is_link=True)
+
+        # Event Timeline Section
+        timeline_label = QLabel("Event Timeline")
+        timeline_label.setStyleSheet(f"""
+            color: {colors['text_primary']};
+            font-size: 14px;
+            font-weight: bold;
+            margin-top: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid {colors['border_secondary']};
+        """)
+        content_layout.addWidget(timeline_label)
+
+        # Timeline container
+        timeline_widget = QWidget()
+        timeline_layout = QVBoxLayout(timeline_widget)
+        timeline_layout.setSpacing(0)
+        timeline_layout.setContentsMargins(0, 8, 0, 0)
+
+        def add_timeline_entry(state, actor, time_str, note=None, is_last=False):
+            """Add a timeline entry with visual connector"""
+            entry = QWidget()
+            entry_layout = QHBoxLayout(entry)
+            entry_layout.setContentsMargins(0, 0, 0, 0)
+            entry_layout.setSpacing(12)
+
+            # Left side: dot and connector line
+            dot_container = QWidget()
+            dot_container.setFixedWidth(24)
+            dot_layout = QVBoxLayout(dot_container)
+            dot_layout.setContentsMargins(0, 0, 0, 0)
+            dot_layout.setSpacing(0)
+
+            # Colored dot
+            dot_color = self.STATE_COLORS.get(state, '#888')
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color: {dot_color}; font-size: 16px;")
+            dot.setAlignment(Qt.AlignHCenter)
+            dot_layout.addWidget(dot)
+
+            # Connector line (except for last entry)
+            if not is_last:
+                line = QLabel("│")
+                line.setStyleSheet(f"color: {colors['border_secondary']}; font-size: 14px;")
+                line.setAlignment(Qt.AlignHCenter)
+                dot_layout.addWidget(line)
+                line2 = QLabel("│")
+                line2.setStyleSheet(f"color: {colors['border_secondary']}; font-size: 14px;")
+                line2.setAlignment(Qt.AlignHCenter)
+                dot_layout.addWidget(line2)
+
+            dot_layout.addStretch()
+            entry_layout.addWidget(dot_container)
+
+            # Right side: content
+            content = QWidget()
+            content_inner = QVBoxLayout(content)
+            content_inner.setContentsMargins(0, 0, 0, 8)
+            content_inner.setSpacing(2)
+
+            # State label
+            state_label = QLabel(state.upper())
+            state_label.setStyleSheet(f"""
+                color: {dot_color};
+                font-size: 12px;
+                font-weight: bold;
+            """)
+            content_inner.addWidget(state_label)
+
+            # Actor and time
+            if actor and time_str:
+                formatted_time = time_str.split('.')[0].replace('T', ' ') if time_str else ''
+                info_label = QLabel(f"{actor} • {formatted_time}")
+                info_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
+                content_inner.addWidget(info_label)
+            elif time_str:
+                formatted_time = time_str.split('.')[0].replace('T', ' ') if time_str else ''
+                info_label = QLabel(formatted_time)
+                info_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px;")
+                content_inner.addWidget(info_label)
+
+            # Note (if any)
+            if note:
+                note_label = QLabel(f"Note: {note}")
+                note_label.setWordWrap(True)
+                note_label.setStyleSheet(f"color: {colors['text_secondary']}; font-size: 11px; font-style: italic;")
+                content_inner.addWidget(note_label)
+
+            entry_layout.addWidget(content, 1)
+            timeline_layout.addWidget(entry)
+
+        # Determine which entries to show
+        timeline_entries = []
+
+        # Created entry (always show)
+        timeline_entries.append(('new', source, timestamp, None))
+
+        # Acknowledged entry (if acknowledged)
+        if acknowledged_by:
+            timeline_entries.append(('acknowledged', acknowledged_by, acknowledged_at, None))
+
+        # Resolved entry (if resolved)
+        if resolved_by:
+            timeline_entries.append(('resolved', resolved_by, resolved_at, resolution_note))
+
+        # Add timeline entries
+        for i, (state, actor, time_str, note) in enumerate(timeline_entries):
+            is_last = (i == len(timeline_entries) - 1)
+            add_timeline_entry(state, actor, time_str, note, is_last)
+
+        content_layout.addWidget(timeline_widget)
+        content_layout.addStretch()
+        scroll_area.setWidget(content_widget)
+        layout.addWidget(scroll_area)
+
+        # Resolution note input (shown when resolving)
+        self.note_container = QWidget()
+        note_layout = QVBoxLayout(self.note_container)
+        note_layout.setContentsMargins(0, 0, 0, 0)
+        note_label = QLabel("Resolution Note (optional):")
+        note_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        note_layout.addWidget(note_label)
+        self.note_input = QLineEdit()
+        self.note_input.setPlaceholderText("Enter resolution note...")
+        self.note_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        note_layout.addWidget(self.note_input)
+        self.note_container.setVisible(False)  # Hidden by default
+        layout.addWidget(self.note_container)
+
+        # Action buttons
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        # Close button (always shown)
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {colors['bg_secondary']};
+                color: {colors['text_primary']};
+                border: 1px solid {colors['border_secondary']};
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: 600;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: {colors['hover_bg']};
+            }}
+        """)
+        close_btn.clicked.connect(self.reject)
+        button_layout.addWidget(close_btn)
+
+        button_layout.addStretch()
+
+        # Action button based on state
+        if self.event_id:  # Only show action buttons if we have an event_id
+            if self.current_state == 'new':
+                ack_btn = QPushButton("Acknowledge")
+                ack_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self.STATE_COLORS['acknowledged']};
+                        color: white;
+                        border: none;
+                        padding: 10px 20px;
+                        border-radius: 6px;
+                        font-weight: 600;
+                        min-width: 120px;
+                    }}
+                    QPushButton:hover {{
+                        background: #1976d2;
+                    }}
+                """)
+                ack_btn.clicked.connect(self.acknowledge_event)
+                button_layout.addWidget(ack_btn)
+
+            if self.current_state in ('new', 'acknowledged'):
+                resolve_btn = QPushButton("Resolve")
+                resolve_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self.STATE_COLORS['resolved']};
+                        color: white;
+                        border: none;
+                        padding: 10px 20px;
+                        border-radius: 6px;
+                        font-weight: 600;
+                        min-width: 120px;
+                    }}
+                    QPushButton:hover {{
+                        background: #388e3c;
+                    }}
+                """)
+                resolve_btn.clicked.connect(self.show_resolve_input)
+                self.resolve_btn = resolve_btn
+                button_layout.addWidget(resolve_btn)
+
+        layout.addLayout(button_layout)
+
+    def acknowledge_event(self):
+        """Acknowledge the event via API"""
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "Error", "No authentication credentials available.")
+            return
+
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+
+        success, response = client.acknowledge_event(self.event_id)
+        if success:
+            QMessageBox.information(self, "Success", "Event acknowledged successfully.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", f"Failed to acknowledge event: {response}")
+
+    def show_resolve_input(self):
+        """Show the resolution note input and change button to confirm"""
+        self.note_container.setVisible(True)
+        self.resolve_btn.setText("Confirm Resolve")
+        self.resolve_btn.clicked.disconnect()
+        self.resolve_btn.clicked.connect(self.resolve_event)
+
+    def resolve_event(self):
+        """Resolve the event via API"""
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "Error", "No authentication credentials available.")
+            return
+
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+
+        note = self.note_input.text().strip() if self.note_input.text() else None
+        success, response = client.resolve_event(self.event_id, note)
+        if success:
+            QMessageBox.information(self, "Success", "Event resolved successfully.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", f"Failed to resolve event: {response}")
+
 
 class CustomStatusDialog(QDialog):
     def __init__(self, parent=None):
@@ -4172,6 +4727,7 @@ class RedisWorker(QObject):
     group_status_updated = pyqtSignal(str, str, dict)  # group, status, full_data
     user_status_updated = pyqtSignal(str, str, dict)  # username, status, full_data (display only)
     users_list_received = pyqtSignal(list)  # list of user dicts from API
+    event_state_changed = pyqtSignal(dict)  # Event state change (acknowledge/resolve)
 
     def __init__(self, redis_info, username=None, parent=None):
         super().__init__(parent)
@@ -4464,6 +5020,23 @@ class RedisWorker(QObject):
                             if 'group' not in data:
                                 data['group'] = group
 
+                            # Check message_type for new event system
+                            message_type = data.get('message_type', 'legacy')
+
+                            if message_type == 'event_state_changed':
+                                # Handle event state change (acknowledge/resolve)
+                                self.log_message.emit(f"[{get_timestamp()}] Event state changed: {data.get('event_id')} -> {data.get('state')}")
+                                self.event_state_changed.emit(data)
+
+                                # Update group status with derived status from server
+                                derived_status = data.get('derived_group_status', 'normal')
+                                self.update_group_status(group, derived_status)
+
+                                # Reset error counter
+                                consecutive_errors = 0
+                                continue
+
+                            # Handle event_created or legacy messages
                             # Check if this event has already been processed
                             event_hash = self.get_event_hash(data)
                             if self.is_event_processed(event_hash):
@@ -7395,7 +7968,7 @@ class BusylightApp(QMainWindow):
                 devices = Busylight_Omega.available_lights()
             else:
                 devices = Light.available_lights()
-                
+
             self.add_log(f"[{get_timestamp()}] Available devices: {len(devices)}")
             for i, device in enumerate(devices):
                 self.add_log(f"[{get_timestamp()}]   Device {i+1}: {device}")
@@ -7494,10 +8067,229 @@ class BusylightApp(QMainWindow):
 
             if events_loaded > 0:
                 self.add_log(f"[{get_timestamp()}] Loaded {events_loaded} existing events from Redis")
+                # Sync event states from API after loading Redis cache
+                QTimer.singleShot(100, self.sync_event_states_from_api)
             else:
                 self.add_log(f"[{get_timestamp()}] No existing events found in Redis")
         except Exception as e:
             self.add_log(f"[{get_timestamp()}] Error loading events from Redis: {e}")
+
+    def sync_event_states_from_api(self):
+        """Sync event states from API to update resolved/acknowledged events"""
+        try:
+            # Check if we have credentials
+            settings = QSettings("Busylight", "BusylightController")
+            username = settings.value("username")
+            password = settings.value("password")
+
+            if not username or not password:
+                self.add_log(f"[{get_timestamp()}] Cannot sync events: No credentials")
+                return
+
+            # Create API client
+            client = APIClient(username, password, self.add_log)
+
+            # Fetch recent events from API (all states to get current state info)
+            success, result = client.get_events(limit=100)
+
+            if not success:
+                self.add_log(f"[{get_timestamp()}] Failed to sync event states from API: {result}")
+                return
+
+            self.add_log(f"[{get_timestamp()}] API returned {len(result)} events for sync")
+
+            # Build a map of event_id -> current state from API
+            api_event_states = {}
+            for event in result:
+                event_id = event.get('id')
+                if event_id:
+                    api_event_states[event_id] = {
+                        'state': event.get('state', 'new'),
+                        'group_name': event.get('group_name'),
+                        'status': event.get('status'),
+                        'acknowledged_by': event.get('acknowledged_by'),
+                        'acknowledged_at': event.get('acknowledged_at'),
+                        'resolved_by': event.get('resolved_by'),
+                        'resolved_at': event.get('resolved_at'),
+                    }
+
+            if not api_event_states:
+                self.add_log(f"[{get_timestamp()}] No events with IDs found in API")
+                return
+
+            # Check if group_event_history exists
+            if not hasattr(self, 'group_event_history') or not self.group_event_history:
+                self.add_log(f"[{get_timestamp()}] No local event history to sync")
+                return
+
+            # Count local events with event_id
+            local_events_with_id = 0
+            local_events_total = 0
+            for group, events in self.group_event_history.items():
+                for event_entry in events:
+                    local_events_total += 1
+                    event_data = event_entry.get('data', {})
+                    if event_data.get('event_id'):
+                        local_events_with_id += 1
+
+            self.add_log(f"[{get_timestamp()}] Local events: {local_events_total} total, {local_events_with_id} with event_id")
+
+            # Update local event history with API states
+            updated_count = 0
+            groups_to_recalculate = set()
+            for group, events in self.group_event_history.items():
+                for event_entry in events:
+                    event_data = event_entry.get('data', {})
+                    event_id = event_data.get('event_id')
+                    if event_id and event_id in api_event_states:
+                        api_state = api_event_states[event_id]
+                        current_state = event_data.get('state', 'new')
+                        new_state = api_state['state']
+
+                        if current_state != new_state:
+                            self.add_log(f"[{get_timestamp()}] Updating event {event_id[:8]}... state: {current_state} -> {new_state}")
+                            event_data['state'] = new_state
+                            event_data['acknowledged_by'] = api_state.get('acknowledged_by')
+                            event_data['acknowledged_at'] = api_state.get('acknowledged_at')
+                            event_data['resolved_by'] = api_state.get('resolved_by')
+                            event_data['resolved_at'] = api_state.get('resolved_at')
+                            updated_count += 1
+                            groups_to_recalculate.add(group)
+
+            if updated_count > 0:
+                self.add_log(f"[{get_timestamp()}] Synced {updated_count} event states from API")
+                # Recalculate group statuses based on unresolved events
+                self.recalculate_group_statuses(groups_to_recalculate)
+                # Refresh the event display
+                QTimer.singleShot(100, self.refresh_event_display)
+            else:
+                self.add_log(f"[{get_timestamp()}] Event states are up to date")
+
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error syncing event states: {e}")
+            import traceback
+            self.add_log(f"[{get_timestamp()}] {traceback.format_exc()}")
+
+    def recalculate_group_statuses(self, groups):
+        """Recalculate group statuses based on NEW (unacknowledged) events only.
+
+        Logic:
+        - Only NEW events determine the priority color (red/yellow/purple)
+        - If all events are acknowledged or resolved → green (normal)
+        - Acknowledged events no longer contribute to the alert level
+        """
+        STATUS_PRIORITY = {
+            'error': 5,
+            'alert': 4,
+            'warning': 2,
+            'normal': 0
+        }
+
+        for group in groups:
+            events = self.group_event_history.get(group, [])
+            # Find highest priority NEW event (not acknowledged, not resolved)
+            highest_status = 'normal'
+            highest_priority = 0
+
+            for event_entry in events:
+                event_data = event_entry.get('data', {})
+                state = event_data.get('state', 'new')
+
+                # Only NEW events contribute to the alert level
+                # Acknowledged and resolved events don't affect the busylight color
+                if state != 'new':
+                    continue
+
+                status = event_data.get('status', 'normal')
+                priority = STATUS_PRIORITY.get(status, 0)
+                if priority > highest_priority:
+                    highest_priority = priority
+                    highest_status = status
+
+            # Update group status in UI
+            if group in self.group_statuses:
+                old_status = self.group_statuses[group].get('status')
+                if old_status != highest_status:
+                    self.add_log(f"[{get_timestamp()}] Group '{group}' status: {old_status} -> {highest_status}")
+                    self.group_statuses[group]['status'] = highest_status
+                    # Update the UI for this group
+                    if hasattr(self, 'update_group_status_display'):
+                        self.update_group_status_display(group, highest_status)
+
+        # Recalculate overall status
+        self.recalculate_overall_status()
+
+    def recalculate_overall_status(self):
+        """Recalculate overall status from all group statuses and update the busylight.
+
+        The busylight shows the highest priority of NEW events:
+        - error (purple) > alert (red) > warning (yellow) > normal (green)
+        """
+        STATUS_PRIORITY = {
+            'error': 5,
+            'alert': 4,
+            'warning': 2,
+            'normal': 0
+        }
+
+        # Get highest priority status from all user's groups
+        highest_status = 'normal'
+        highest_priority = 0
+
+        user_groups = set()
+        if self.redis_info:
+            user_groups = set(self.redis_info.get('groups', []))
+            # Add username to user_groups
+            username = QSettings("Busylight", "BusylightController").value("username")
+            if username:
+                user_groups.add(username)
+
+        for group, group_data in self.group_statuses.items():
+            if group not in user_groups:
+                continue  # Only consider user's groups for overall status
+
+            status = group_data.get('status', 'normal')
+            priority = STATUS_PRIORITY.get(status, 0)
+            if priority > highest_priority:
+                highest_priority = priority
+                highest_status = status
+
+        # Update the busylight
+        self.add_log(f"[{get_timestamp()}] Recalculated overall status: {highest_status}")
+        self.light_controller.set_status(highest_status)
+
+    def refresh_event_display(self):
+        """Refresh the event display to show updated states"""
+        try:
+            # Clear and rebuild the event cards
+            if hasattr(self, 'event_cards_layout'):
+                # Clear existing cards
+                while self.event_cards_layout.count():
+                    item = self.event_cards_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
+
+                # Rebuild cards from event history
+                all_events = []
+                for group, events in self.group_event_history.items():
+                    for event_entry in events:
+                        event_data = event_entry.get('data', {})
+                        all_events.append((group, event_data))
+
+                # Sort by timestamp (newest first)
+                all_events.sort(key=lambda x: x[1].get('timestamp', ''), reverse=True)
+
+                # Create cards (up to display limit)
+                for group, event_data in all_events[:20]:
+                    status = event_data.get('status', 'normal')
+                    card = self.create_event_card(group, status, event_data)
+                    self.event_cards_layout.addWidget(card)
+
+                # Add spacer at the end
+                self.event_cards_layout.addStretch()
+
+        except Exception as e:
+            self.add_log(f"[{get_timestamp()}] Error refreshing event display: {e}")
 
     def show_and_raise(self):
         """Show and raise the window to the top to make it visible"""
@@ -7710,22 +8502,54 @@ class BusylightApp(QMainWindow):
         # Only add event to history if it has a real source (skip fake/default events)
         source = data.get('source', '')
         if source and source != 'unknown':
+            event_id = data.get('event_id')
+            message_type = data.get('message_type', 'legacy')
+
+            # If this is a state change message, update existing event instead of adding new
+            if message_type == 'event_state_changed' and event_id:
+                for existing_event in self.group_event_history[group]:
+                    existing_data = existing_event.get('data', {})
+                    if existing_data.get('event_id') == event_id:
+                        # Update existing event with new state info
+                        new_state = data.get('state')
+                        existing_data['state'] = new_state
+                        if new_state == 'acknowledged':
+                            existing_data['acknowledged_by'] = data.get('action_by')
+                            existing_data['acknowledged_at'] = data.get('action_at')
+                        elif new_state == 'resolved':
+                            existing_data['resolved_by'] = data.get('action_by')
+                            existing_data['resolved_at'] = data.get('action_at')
+                            if data.get('resolution_note'):
+                                existing_data['resolution_note'] = data.get('resolution_note')
+                        # Update the entry's status to reflect current state
+                        existing_event['status'] = data.get('derived_group_status', status)
+                        return  # Don't add a new entry
+                # If we didn't find the event, fall through to add it
+
             # Check for duplicates - don't add if this exact event already exists
             event_timestamp = data.get('timestamp', '')
             is_duplicate = False
 
             for existing_event in self.group_event_history[group]:
                 existing_data = existing_event.get('data', {})
-                existing_timestamp = existing_data.get('timestamp', '')
-                existing_source = existing_data.get('source', '')
-                existing_status = existing_event.get('status', '')
+                existing_event_id = existing_data.get('event_id')
 
-                # Consider it a duplicate if timestamp, source, and status match
-                if (existing_timestamp == event_timestamp and
-                    existing_source == source and
-                    existing_status == status):
-                    is_duplicate = True
-                    break
+                # If both have event_id, compare by event_id
+                if event_id and existing_event_id:
+                    if event_id == existing_event_id:
+                        is_duplicate = True
+                        break
+                else:
+                    # Fall back to timestamp/source/status comparison for legacy events
+                    existing_timestamp = existing_data.get('timestamp', '')
+                    existing_source = existing_data.get('source', '')
+                    existing_status = existing_event.get('status', '')
+
+                    if (existing_timestamp == event_timestamp and
+                        existing_source == source and
+                        existing_status == status):
+                        is_duplicate = True
+                        break
 
             # Only add if not a duplicate
             if not is_duplicate:
@@ -7765,6 +8589,56 @@ class BusylightApp(QMainWindow):
                 for key, value in self.list_item_to_group.items():
                     if value['item'] == current_item and value['group'] == group:
                         # Update the detail panel
+                        self.update_detail_panel(group, widgets)
+                        break
+
+    def handle_event_state_change(self, data):
+        """Handle event state change notifications from Redis (acknowledge/resolve)"""
+        event_id = data.get('event_id')
+        new_state = data.get('state')
+        group = data.get('group')
+        action_by = data.get('action_by')
+        derived_status = data.get('derived_group_status', 'normal')
+
+        self.add_log(f"[{get_timestamp()}] Event {event_id} state changed to '{new_state}' by {action_by}")
+
+        if not event_id or not group:
+            return
+
+        # Update local event history with new state
+        if hasattr(self, 'group_event_history') and group in self.group_event_history:
+            for event in self.group_event_history[group]:
+                event_data = event.get('data', {})
+                if event_data.get('event_id') == event_id:
+                    # Update the event's state
+                    event_data['state'] = new_state
+                    event_data['acknowledged_by'] = data.get('action_by') if new_state == 'acknowledged' else event_data.get('acknowledged_by')
+                    event_data['acknowledged_at'] = data.get('action_at') if new_state == 'acknowledged' else event_data.get('acknowledged_at')
+                    event_data['resolved_by'] = data.get('action_by') if new_state == 'resolved' else event_data.get('resolved_by')
+                    event_data['resolved_at'] = data.get('action_at') if new_state == 'resolved' else event_data.get('resolved_at')
+                    if data.get('resolution_note'):
+                        event_data['resolution_note'] = data.get('resolution_note')
+                    break
+
+        # Update group status with the derived status from server
+        if group in self.group_statuses:
+            self.group_statuses[group]['status'] = derived_status
+
+        # Update colored dots
+        self.update_group_dot_color(group, derived_status, 'my_groups')
+        self.update_group_dot_color(group, derived_status, 'all_groups')
+        self.update_group_dot_color(group, derived_status, 'combined_my')
+        self.update_group_dot_color(group, derived_status, 'combined_all')
+
+        # Update detail panel if this group is currently selected
+        if group in self.group_widgets:
+            widgets = self.group_widgets[group]
+            list_widget = widgets.get('list_widget')
+
+            if list_widget and list_widget.currentItem():
+                current_item = list_widget.currentItem()
+                for key, value in self.list_item_to_group.items():
+                    if value['item'] == current_item and value['group'] == group:
                         self.update_detail_panel(group, widgets)
                         break
 
@@ -7989,24 +8863,46 @@ class BusylightApp(QMainWindow):
 
         dialog.exec()
 
+    def show_event_action_dialog(self, event_data):
+        """Show the EventActionDialog for viewing details and taking actions on events"""
+        dialog = EventActionDialog(event_data, self)
+        dialog.exec()
+
+    # Priority colors for event card borders (based on original event priority)
+    # Border stays fixed to show what priority the event started as
+    EVENT_PRIORITY_COLORS = {
+        'alert': '#f44336',       # Red - Critical (p0/p1)
+        'alert-acked': '#f44336', # Red - Was critical
+        'warning': '#ffeb3b',     # Yellow - Warning (p2+)
+        'normal': '#4caf50',      # Green - Normal
+        'error': '#9c27b0'        # Purple - Error
+    }
+
+    # State badge colors (workflow state)
+    EVENT_STATE_BADGE_COLORS = {
+        'new': '#f44336',         # Red - needs attention
+        'acknowledged': '#ff9800', # Orange - being worked on
+        'resolved': '#4caf50'     # Green - done
+    }
+
     def create_event_card(self, event_data, colors):
         """Create a clickable event card widget with compact styling"""
         card = QWidget()
         card.setObjectName("event_card")
         card.setCursor(Qt.PointingHandCursor)  # Show it's clickable
 
-        # Get status color for the left border
+        # Get event data
+        data = event_data.get('data', {})
+        event_state = data.get('state', 'new')
         status = event_data.get('status', 'normal')
-        if status in self.light_controller.COLOR_MAP:
-            r, g, b = self.light_controller.COLOR_MAP[status]
-            status_color = f"rgb({r}, {g}, {b})"
-        else:
-            status_color = colors['accent_green']
+
+        # Border color = original priority (stays fixed to show what priority the event started as)
+        border_color = self.EVENT_PRIORITY_COLORS.get(status, '#4caf50')
 
         card.setStyleSheet(f"""
             QWidget#event_card {{
                 background: {colors['bg_secondary']};
-                border-left: 4px solid {status_color};
+                border-left: 4px solid {border_color};
                 border-radius: 8px;
                 padding: 10px;
                 margin: 4px 0;
@@ -8024,8 +8920,7 @@ class BusylightApp(QMainWindow):
         card_layout.setSpacing(4)
         card_layout.setContentsMargins(8, 6, 8, 6)
 
-        # Parse event data
-        data = event_data.get('data', {})
+        # Parse additional event data
         timestamp = data.get('timestamp', '')
         source = data.get('source', 'Unknown')
         reason = data.get('reason', '')
@@ -8036,7 +8931,7 @@ class BusylightApp(QMainWindow):
             time_part = timestamp.split('T')[1].split('.')[0] if '.' in timestamp else timestamp.split('T')[1]
             timestamp = time_part
 
-        # Header row with timestamp and status
+        # Header row with timestamp and state badge only (no status badge)
         header_layout = QHBoxLayout()
 
         timestamp_label = QLabel(timestamp)
@@ -8045,18 +8940,18 @@ class BusylightApp(QMainWindow):
 
         header_layout.addStretch()
 
-        status_badge = QLabel(status.upper())
-        # Use black text for yellow/warning, white for others
-        badge_text_color = "black" if status in ['warning'] else "white"
-        status_badge.setStyleSheet(f"""
-            background: {status_color};
-            color: {badge_text_color};
+        # State badge (workflow state: NEW, ACKNOWLEDGED, RESOLVED)
+        state_badge_color = self.EVENT_STATE_BADGE_COLORS.get(event_state, '#ff5722')
+        state_badge = QLabel(event_state.upper())
+        state_badge.setStyleSheet(f"""
+            background: {state_badge_color};
+            color: white;
             padding: 2px 8px;
             border-radius: 8px;
             font-size: 9px;
             font-weight: bold;
         """)
-        header_layout.addWidget(status_badge)
+        header_layout.addWidget(state_badge)
 
         card_layout.addLayout(header_layout)
 
@@ -8082,9 +8977,9 @@ class BusylightApp(QMainWindow):
             url_indicator.setStyleSheet(f"color: {colors['accent_blue']}; font-size: 10px; font-style: italic;")
             card_layout.addWidget(url_indicator)
 
-        # Make card clickable to show full details
+        # Make card clickable to show EventActionDialog (with acknowledge/resolve actions)
         def on_card_click(event):
-            self.show_event_detail_dialog(event_data)
+            self.show_event_action_dialog(event_data)
 
         card.mousePressEvent = on_card_click
 
@@ -9206,6 +10101,7 @@ class BusylightApp(QMainWindow):
             self.redis_worker.ticket_received.connect(self.process_ticket_info)
             self.redis_worker.group_status_updated.connect(self.update_group_status)
             self.redis_worker.user_status_updated.connect(self.update_user_status)
+            self.redis_worker.event_state_changed.connect(self.handle_event_state_change)
             self.worker_thread.started.connect(self.redis_worker.run)
             self.worker_thread.start()
 
