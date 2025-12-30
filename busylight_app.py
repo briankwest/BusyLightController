@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.1"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
