@@ -17,7 +17,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 APP_NAME = "BLASST Controller"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 ICON_FILE = "icon.png"
 MAIN_SCRIPT = "busylight_app_main.py"
 COMPANY_NAME = "SignalWire"

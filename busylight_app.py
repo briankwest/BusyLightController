@@ -31,7 +31,7 @@ import logging.handlers
 from pathlib import Path
 
 # Application version - increment this with each code change
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.5"
 
 # User-Agent for API requests
 USER_AGENT = f"BusylightController/{APP_VERSION}"
@@ -561,14 +561,29 @@ class APIClient:
         """
         return self._update_event(event_id, 'resolve', note)
 
-    def _update_event(self, event_id, action, note=None):
+    def unresolve_event(self, event_id, target_state='acknowledged', note=None):
+        """
+        Unresolve an event, returning it to the specified state
+
+        Args:
+            event_id: UUID of the event to unresolve
+            target_state: State to return to ('new' or 'acknowledged')
+            note: Optional reason for unresolving
+
+        Returns:
+            tuple: (success: bool, response_data: dict or error message: str)
+        """
+        return self._update_event(event_id, 'unresolve', note, target_state=target_state)
+
+    def _update_event(self, event_id, action, note=None, target_state=None):
         """
         Internal method to update event state
 
         Args:
             event_id: UUID of the event
-            action: 'acknowledge' or 'resolve'
+            action: 'acknowledge', 'resolve', or 'unresolve'
             note: Optional note (mainly for resolve)
+            target_state: Target state for unresolve ('new' or 'acknowledged')
 
         Returns:
             tuple: (success: bool, response_data: dict or error message: str)
@@ -578,6 +593,8 @@ class APIClient:
             payload = {'action': action}
             if note:
                 payload['note'] = note
+            if target_state:
+                payload['target_state'] = target_state
 
             headers = {
                 'Content-Type': 'application/json',
@@ -693,6 +710,47 @@ class APIClient:
             if self.logger_callback:
                 self.logger_callback(f"[{get_timestamp()}] API Error: {str(e)}")
             return False, error_msg
+
+    def get_event(self, event_id):
+        """
+        Fetch a single event by ID (includes history)
+
+        Args:
+            event_id: UUID of the event
+
+        Returns:
+            tuple: (success: bool, event_data: dict or error_msg: str)
+        """
+        try:
+            url = f"{self.api_base_url}/api/events/{event_id}"
+            headers = {
+                'User-Agent': USER_AGENT
+            }
+
+            response = requests.get(
+                url,
+                headers=headers,
+                auth=(self.username, self.password),
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                event_data = response.json()
+                return True, event_data
+            else:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', f"HTTP {response.status_code}")
+                except:
+                    error_msg = f"HTTP {response.status_code}"
+                return False, error_msg
+
+        except requests.exceptions.Timeout:
+            return False, "Request timed out"
+        except requests.exceptions.ConnectionError:
+            return False, "Connection failed"
+        except Exception as e:
+            return False, f"Unexpected error: {str(e)}"
 
 class LogSignalEmitter(QObject):
     """QObject for emitting log signals"""
@@ -2658,16 +2716,39 @@ class EventActionDialog(QDialog):
         # Determine which entries to show
         timeline_entries = []
 
-        # Created entry (always show)
-        timeline_entries.append(('new', source, timestamp, None))
+        # Check if history array exists (new format)
+        history = self.data.get('history', [])
+        if history:
+            # Build timeline from history entries
+            for entry in history:
+                action = entry.get('action', '')
+                new_state = entry.get('new_state', '')
+                action_by = entry.get('action_by', '')
+                action_at = entry.get('action_at', '')
+                entry_note = entry.get('note')
 
-        # Acknowledged entry (if acknowledged)
-        if acknowledged_by:
-            timeline_entries.append(('acknowledged', acknowledged_by, acknowledged_at, None))
+                # Map action to display state
+                if action == 'created':
+                    timeline_entries.append(('new', action_by, action_at, None))
+                elif action == 'acknowledge':
+                    timeline_entries.append(('acknowledged', action_by, action_at, None))
+                elif action == 'resolve':
+                    timeline_entries.append(('resolved', action_by, action_at, entry_note))
+                elif action == 'unresolve':
+                    # Show unresolve as returning to the target state
+                    timeline_entries.append((f'unresolved → {new_state}', action_by, action_at, entry_note))
+        else:
+            # Fallback to old format (using individual fields)
+            # Created entry (always show)
+            timeline_entries.append(('new', source, timestamp, None))
 
-        # Resolved entry (if resolved)
-        if resolved_by:
-            timeline_entries.append(('resolved', resolved_by, resolved_at, resolution_note))
+            # Acknowledged entry (if acknowledged)
+            if acknowledged_by:
+                timeline_entries.append(('acknowledged', acknowledged_by, acknowledged_at, None))
+
+            # Resolved entry (if resolved)
+            if resolved_by:
+                timeline_entries.append(('resolved', resolved_by, resolved_at, resolution_note))
 
         # Add timeline entries
         for i, (state, actor, time_str, note) in enumerate(timeline_entries):
@@ -2700,6 +2781,57 @@ class EventActionDialog(QDialog):
         note_layout.addWidget(self.note_input)
         self.note_container.setVisible(False)  # Hidden by default
         layout.addWidget(self.note_container)
+
+        # Unresolve container (shown when event is resolved)
+        self.unresolve_container = QWidget()
+        unresolve_layout = QHBoxLayout(self.unresolve_container)
+        unresolve_layout.setContentsMargins(0, 0, 0, 0)
+        unresolve_layout.setSpacing(12)
+
+        # Target state dropdown
+        state_label = QLabel("Return to:")
+        state_label.setStyleSheet(f"color: {colors['text_primary']}; font-weight: bold;")
+        unresolve_layout.addWidget(state_label)
+
+        self.unresolve_state_combo = QComboBox()
+        self.unresolve_state_combo.addItem("Acknowledged", "acknowledged")
+        self.unresolve_state_combo.addItem("New", "new")
+        self.unresolve_state_combo.setStyleSheet(f"""
+            QComboBox {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                min-width: 120px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+                selection-background-color: {colors['hover_bg']};
+            }}
+        """)
+        unresolve_layout.addWidget(self.unresolve_state_combo)
+
+        # Optional reason input
+        self.unresolve_note_input = QLineEdit()
+        self.unresolve_note_input.setPlaceholderText("Reason (optional)")
+        self.unresolve_note_input.setStyleSheet(f"""
+            QLineEdit {{
+                padding: 8px;
+                border: 1px solid {colors['border_secondary']};
+                border-radius: 4px;
+                background: {colors['bg_primary']};
+                color: {colors['text_primary']};
+            }}
+        """)
+        unresolve_layout.addWidget(self.unresolve_note_input, 1)
+
+        self.unresolve_container.setVisible(False)  # Hidden by default
+        layout.addWidget(self.unresolve_container)
 
         # Action buttons
         button_layout = QHBoxLayout()
@@ -2767,6 +2899,27 @@ class EventActionDialog(QDialog):
                 self.resolve_btn = resolve_btn
                 button_layout.addWidget(resolve_btn)
 
+            if self.current_state == 'resolved':
+                # Show unresolve container and button for resolved events
+                self.unresolve_container.setVisible(True)
+                unresolve_btn = QPushButton("Unresolve")
+                unresolve_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {self.STATE_COLORS['acknowledged']};
+                        color: white;
+                        border: none;
+                        padding: 10px 20px;
+                        border-radius: 6px;
+                        font-weight: 600;
+                        min-width: 120px;
+                    }}
+                    QPushButton:hover {{
+                        background: #f57c00;
+                    }}
+                """)
+                unresolve_btn.clicked.connect(self.unresolve_event)
+                button_layout.addWidget(unresolve_btn)
+
         layout.addLayout(button_layout)
 
     def acknowledge_event(self):
@@ -2810,6 +2963,28 @@ class EventActionDialog(QDialog):
             self.accept()
         else:
             QMessageBox.warning(self, "Error", f"Failed to resolve event: {response}")
+
+    def unresolve_event(self):
+        """Unresolve the event via API"""
+        parent_app = self.parent()
+        if not parent_app or not hasattr(parent_app, 'username') or not hasattr(parent_app, 'password'):
+            QMessageBox.warning(self, "Error", "No authentication credentials available.")
+            return
+
+        logger_callback = parent_app.add_log if hasattr(parent_app, 'add_log') else None
+        client = APIClient(parent_app.username, parent_app.password, logger_callback)
+
+        # Get selected target state from dropdown
+        target_state = self.unresolve_state_combo.currentData()
+        note = self.unresolve_note_input.text().strip() if self.unresolve_note_input.text() else None
+
+        success, response = client.unresolve_event(self.event_id, target_state, note)
+        if success:
+            state_label = "new" if target_state == "new" else "acknowledged"
+            QMessageBox.information(self, "Success", f"Event returned to {state_label} state.")
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Error", f"Failed to unresolve event: {response}")
 
 
 class CustomStatusDialog(QDialog):
@@ -5101,13 +5276,28 @@ class RedisWorker(QObject):
         # Get the most recent status for each group from their individual status keys
         for group in channels_to_load:
             status_key = f"status:{group}"
+            current_status_key = f"current_status:{group}"
             try:
+                # First check current_status:{group} which has the correctly derived status
+                # This is updated by the API when events are resolved/acknowledged
+                derived_status = self.redis_client.get(current_status_key)
+
                 # Get the most recent status event for this group
                 recent_event = self.redis_client.lindex(status_key, 0)  # Most recent is at index 0
                 if recent_event:
                     try:
                         data = json.loads(recent_event)
-                        event_status = data.get('status')
+
+                        # Determine the correct status to use:
+                        # 1. If message has derived_group_status (from event_state_changed), use it
+                        # 2. Otherwise use the current_status key (derived status from API)
+                        # 3. Fall back to the event's raw status only if no derived status available
+                        if data.get('derived_group_status'):
+                            event_status = data.get('derived_group_status')
+                        elif derived_status:
+                            event_status = derived_status
+                        else:
+                            event_status = data.get('status')
 
                         # Add group to data if not present
                         if 'group' not in data:
@@ -5128,6 +5318,14 @@ class RedisWorker(QObject):
 
                     except json.JSONDecodeError as e:
                         self.log_message.emit(f"[{get_timestamp()}] Error parsing status data for group '{group}': {e}")
+                elif derived_status:
+                    # No events in list but we have a derived status
+                    self.log_message.emit(f"[{get_timestamp()}] Using derived status for group '{group}': {derived_status}")
+                    group_found_status[group] = {
+                        'status': derived_status,
+                        'data': {'group': group, 'status': derived_status},
+                        'hash': None
+                    }
                 else:
                     self.log_message.emit(f"[{get_timestamp()}] No status events found for group '{group}'")
 
@@ -5142,8 +5340,9 @@ class RedisWorker(QObject):
                 data = group_found_status[group]['data']
                 event_hash = group_found_status[group]['hash']
 
-                # Mark as processed and emit
-                self.mark_event_processed(event_hash)
+                # Mark as processed and emit (only if we have a hash)
+                if event_hash:
+                    self.mark_event_processed(event_hash)
                 self.group_status_updated.emit(group, status, data)
                 self.process_ticket_info(data, group)
 
@@ -8049,14 +8248,23 @@ class BusylightApp(QMainWindow):
                         events_to_load = min(event_count, 20)
                         events = self.redis_worker.redis_client.lrange(status_key, 0, events_to_load - 1)
 
+                        # Get the derived status for this group (for dot colors)
+                        # This should be the correct status based on current event states
+                        current_status_key = f"current_status:{group}"
+                        derived_status = self.redis_worker.redis_client.get(current_status_key)
+
                         # Process events in reverse order (oldest first) so they appear in correct chronological order
                         for event_data in reversed(events):
                             try:
                                 data = json.loads(event_data)
                                 status = data.get('status')
                                 if status:
-                                    # Add event to history (update_group_status will filter out events without source)
-                                    self.update_group_status(group, status, data)
+                                    # Add event to history
+                                    # Use derived_group_status from the event if available,
+                                    # otherwise use the cached derived status for the group,
+                                    # otherwise fall back to the event's raw status
+                                    display_status = data.get('derived_group_status') or derived_status or status
+                                    self.update_group_status(group, display_status, data)
                                     events_loaded += 1
                             except json.JSONDecodeError as e:
                                 self.add_log(f"[{get_timestamp()}] Error parsing event from {group}: {e}")
@@ -8273,16 +8481,18 @@ class BusylightApp(QMainWindow):
                 all_events = []
                 for group, events in self.group_event_history.items():
                     for event_entry in events:
-                        event_data = event_entry.get('data', {})
-                        all_events.append((group, event_data))
+                        # Keep full event_entry which has 'status', 'timestamp', and 'data'
+                        all_events.append((group, event_entry))
 
-                # Sort by timestamp (newest first)
-                all_events.sort(key=lambda x: x[1].get('timestamp', ''), reverse=True)
+                # Sort by timestamp (newest first) - use inner data timestamp
+                all_events.sort(key=lambda x: x[1].get('data', {}).get('timestamp', ''), reverse=True)
+
+                # Get adaptive colors for cards
+                colors = get_adaptive_colors()
 
                 # Create cards (up to display limit)
-                for group, event_data in all_events[:20]:
-                    status = event_data.get('status', 'normal')
-                    card = self.create_event_card(group, status, event_data)
+                for group, event_entry in all_events[:20]:
+                    card = self.create_event_card(event_entry, colors)
                     self.event_cards_layout.addWidget(card)
 
                 # Add spacer at the end
@@ -8507,10 +8717,12 @@ class BusylightApp(QMainWindow):
 
             # If this is a state change message, update existing event instead of adding new
             if message_type == 'event_state_changed' and event_id:
+                found_event = False
                 for existing_event in self.group_event_history[group]:
                     existing_data = existing_event.get('data', {})
                     if existing_data.get('event_id') == event_id:
                         # Update existing event with new state info
+                        found_event = True
                         new_state = data.get('state')
                         existing_data['state'] = new_state
                         if new_state == 'acknowledged':
@@ -8521,10 +8733,12 @@ class BusylightApp(QMainWindow):
                             existing_data['resolved_at'] = data.get('action_at')
                             if data.get('resolution_note'):
                                 existing_data['resolution_note'] = data.get('resolution_note')
-                        # Update the entry's status to reflect current state
-                        existing_event['status'] = data.get('derived_group_status', status)
-                        return  # Don't add a new entry
-                # If we didn't find the event, fall through to add it
+                        # NOTE: Don't update existing_event['status'] - that's the original priority
+                        # which should never change. The derived_group_status is for the GROUP display only.
+                        break
+                # Don't add state_change messages as new event entries - they're not full events
+                # They should only update existing events
+                return
 
             # Check for duplicates - don't add if this exact event already exists
             event_timestamp = data.get('timestamp', '')
@@ -8865,6 +9079,19 @@ class BusylightApp(QMainWindow):
 
     def show_event_action_dialog(self, event_data):
         """Show the EventActionDialog for viewing details and taking actions on events"""
+        # Try to fetch fresh event data from API to get history
+        event_id = event_data.get('data', {}).get('event_id')
+        if event_id and hasattr(self, 'username') and hasattr(self, 'password'):
+            client = APIClient(self.username, self.password)
+            success, fresh_data = client.get_event(event_id)
+            if success and fresh_data:
+                # Merge fresh data (including history) into event_data structure
+                # The API returns flat structure, we need to put it in 'data' key
+                event_data['data']['history'] = fresh_data.get('history', [])
+                # Also update state in case it changed
+                if 'state' in fresh_data:
+                    event_data['data']['state'] = fresh_data['state']
+
         dialog = EventActionDialog(event_data, self)
         dialog.exec()
 
