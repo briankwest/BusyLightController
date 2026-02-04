@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['busylight_app_main.py'],
+    ['blasst_app_main.py'],
     pathex=[],
     binaries=[],
     datas=[('icon.png', '.'), ('sw.jpeg', '.')],

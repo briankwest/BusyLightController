@@ -17,9 +17,9 @@ from datetime import datetime
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 APP_NAME = "BLASST Controller"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 ICON_FILE = "icon.png"
-MAIN_SCRIPT = "busylight_app_main.py"
+MAIN_SCRIPT = "blasst_app_main.py"
 COMPANY_NAME = "SignalWire"
 UPGRADE_CODE = "64D24FC5-F9B7-4FB1-A54B-33D84D888658"
 
@@ -186,7 +186,7 @@ coll = COLLECT(
 )
 """
     
-    spec_file = "busylight_windows.spec"
+    spec_file = "blasst_windows.spec"
     with open(spec_file, "w", encoding="utf-8") as f:
         f.write(spec_content)
     
@@ -383,7 +383,7 @@ There is no spoon, only your choice. Take the red pill, and SignalWire L1ghtDuty
     ])
     
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    msi_file = os.path.join("dist", f"BusylightController-{APP_VERSION}-{timestamp}.msi")
+    msi_file = os.path.join("dist", f"BLASSTController-{APP_VERSION}-{timestamp}.msi")
     run_command([
         "light", 
         os.path.join(wix_dir, "busylight.wixobj"), 

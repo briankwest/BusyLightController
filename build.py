@@ -62,7 +62,7 @@ def build_application():
         platform_options = ['--icon=icon.png']
     
     # Combine options and run PyInstaller
-    command = ['pyinstaller'] + common_options + platform_options + ['busylight_app_main.py']
+    command = ['pyinstaller'] + common_options + platform_options + ['blasst_app_main.py']
     
     # Filter out empty strings from options
     command = [opt for opt in command if opt]

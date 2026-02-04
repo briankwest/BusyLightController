@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Busylight Controller is a cross-platform desktop application that controls USB Kuando Busylight devices for status indication. It provides system tray integration, Redis-based ticket system integration, text-to-speech announcements, and autostart capabilities.
+BLASST Controller (Busy Light Alerting System for Signalwire SupporT) is a cross-platform desktop application that controls USB Kuando Busylight devices for status indication. It provides system tray integration, Redis-based ticket system integration, text-to-speech announcements, and autostart capabilities.
 
 ## Core Architecture
 
-- **Main Application**: `busylight_app.py` - PySide6-based GUI application with system tray integration
-- **Entry Point**: `busylight_app_main.py` - Application launcher
-- **CLI Version**: `busylight_cli.py` - Command-line interface for basic light control
+- **Main Application**: `blasst_app.py` - PySide6-based GUI application with system tray integration
+- **Entry Point**: `blasst_app_main.py` - Application launcher
+- **CLI Version**: `busylight_cli.py` - Command-line interface for basic light control (legacy, not actively developed)
 - **Development Runner**: `run_dev.py` - Launches the app directly for testing
 
 The application uses:
@@ -29,7 +29,7 @@ The application uses:
 python run_dev.py
 
 # Direct execution
-python busylight_app_main.py
+python blasst_app_main.py
 ```
 
 ### Installing Dependencies
@@ -57,20 +57,19 @@ python build.py
 ## Version Management
 
 ### Application Version
-- **Version Constant**: `APP_VERSION` in `busylight_app.py` (line ~28)
+- **Version Constant**: `APP_VERSION` in `blasst_app.py` (line ~28)
 - **IMPORTANT**: Increment `APP_VERSION` with each code change to track software versions
 - Current format: Semantic versioning (e.g., "1.0.3")
 - Version is displayed in the Help & About dialog (accessible via "?" button in tab bar)
 
 ### User-Agent for API Requests
-- **User-Agent Constant**: `USER_AGENT` in `busylight_app.py` (line ~31)
-- Format: `BusylightController/{APP_VERSION}`
+- **User-Agent Constant**: `USER_AGENT` in `blasst_app.py` (line ~31)
+- Format: `BLASSTController/{APP_VERSION}`
 - All API requests include this User-Agent header for tracking and debugging
 - Locations using User-Agent:
   - `authenticate()` method - login authentication
   - `test_connection()` method - connection testing
   - `submit_to_api()` method - status updates
-  - `get_redis_password()` in `busylight_cli.py` - CLI Redis auth
 
 ## Application Structure
 
@@ -89,10 +88,11 @@ python build.py
 - **Event History**: Displays recent status events (skips fake/default events without source)
 
 ### Configuration Storage
-- **macOS**: `~/Library/Preferences/com.busylight.BusylightController.plist`
-  - Can be edited using `defaults` command: `defaults write com.busylight.BusylightController <key> -<type> <value>`
-  - Example: `defaults write com.busylight.BusylightController app.start_minimized -bool true`
-- **Windows**: Registry under `HKEY_CURRENT_USER\Software\Busylight\BusylightController`
+- **macOS**: `~/Library/Preferences/com.blasst.BLASSTController.plist`
+  - Can be edited using `defaults` command: `defaults write com.blasst.BLASSTController <key> -<type> <value>`
+  - Example: `defaults write com.blasst.BLASSTController app.start_minimized -bool true`
+- **Windows**: Registry under `HKEY_CURRENT_USER\Software\BLASST\BLASSTController`
+- **Settings Migration**: On first launch, settings are automatically migrated from the old Busylight location
 
 ### Redis Integration
 - Connects to Redis server for ticket notifications
@@ -116,7 +116,7 @@ python build.py
   - **Windows**: No additional requirements (uses SAPI5)
   - **Linux**: Requires `espeak` to be installed (`sudo apt-get install espeak`)
 - **Implementation**:
-  - `TTSWorker` class (`busylight_app.py` ~line 2978): QThread-based worker for non-blocking TTS
+  - `TTSWorker` class (`blasst_app.py` ~line 2978): QThread-based worker for non-blocking TTS
   - `get_available_english_voices()` function (~line 130): Returns list of available English voices
   - `speak_ticket_summary()` method (~line 5005): Speaks ticket summaries
   - `speak_group_status_event()` method (~line 5030): Speaks group status changes
@@ -135,9 +135,9 @@ python build.py
 
 ## Key Files
 
-- `busylight_macos.spec` - PyInstaller spec for macOS builds
-- `busylight_win_build.spec` - PyInstaller spec for Windows builds
-- `BusylightController.spec` - Generic PyInstaller spec
+- `blasst_macos.spec` - PyInstaller spec for macOS builds
+- `blasst_win_build.spec` - PyInstaller spec for Windows builds
+- `BLASSTController.spec` - Generic PyInstaller spec
 - `requirements.txt` - Python dependencies
 - Icon files: `icon.png`, `icon.ico`, `icon.icns`
 

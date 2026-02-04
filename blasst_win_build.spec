@@ -18,7 +18,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 datas += [('icon.png', '.'), ('sw.jpeg', '.')]
 
 a = Analysis(
-    ['busylight_app_main.py'],
+    ['blasst_app_main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
-from busylight_app import main
+from blasst_app import main
 
 if __name__ == "__main__":
     try:

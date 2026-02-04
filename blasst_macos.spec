@@ -3,7 +3,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['busylight_app_main.py'],
+    ['blasst_app_main.py'],
     pathex=[],
     binaries=[],
     datas=[('icon.png', '.'), ('icon.icns', '.'), ('sw.jpeg', '.')],
@@ -59,11 +59,11 @@ app = BUNDLE(
     coll,
     name='BLASST Controller.app',
     icon='icon.icns',
-    bundle_identifier='com.busylight.controller',
+    bundle_identifier='com.blasst.controller',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
-        'CFBundleShortVersionString': '1.1.6',
+        'CFBundleShortVersionString': '1.3.1',
         'LSUIElement': '1',  # Makes the app not show in dock
     },
 )

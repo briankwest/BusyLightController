@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build script for Busylight Controller macOS PKG installer
+Build script for BLASST Controller macOS PKG installer
 """
 
 import os
@@ -10,9 +10,9 @@ import shutil
 from datetime import datetime
 
 APP_NAME = "BLASST Controller"
-APP_VERSION = "1.3.1"  # Update this as needed
+APP_VERSION = "1.3.2"  # Update this as needed
 ICON_FILE = "icon.png"  # Ensure this exists
-MAIN_SCRIPT = "busylight_app_main.py"
+MAIN_SCRIPT = "blasst_app_main.py"
 COMPANY_NAME = "SignalWire"
 
 def run_command(cmd, cwd=None):
@@ -147,7 +147,7 @@ app = BUNDLE(
     coll,
     name='{APP_NAME}.app',
     icon='{icns_file}',
-    bundle_identifier='com.busylight.controller',
+    bundle_identifier='com.blasst.controller',
     info_plist={{
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
@@ -158,7 +158,7 @@ app = BUNDLE(
 """
     
     # Write spec file
-    spec_file = "busylight_macos.spec"
+    spec_file = "blasst_macos.spec"
     with open(spec_file, "w") as f:
         f.write(spec_content)
     
@@ -216,13 +216,13 @@ def build_pkg_installer(app_bundle_path):
     
     # Build the package
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    pkg_file = f"dist/BusylightController-{APP_VERSION}-{timestamp}.pkg"
+    pkg_file = f"dist/BLASSTController-{APP_VERSION}-{timestamp}.pkg"
     
     run_command([
         "pkgbuild",
         "--root", pkg_root,
         "--component-plist", component_plist,
-        "--identifier", "com.busylight.controller",
+        "--identifier", "com.blasst.controller",
         "--version", APP_VERSION,
         "--install-location", "/",
         pkg_file

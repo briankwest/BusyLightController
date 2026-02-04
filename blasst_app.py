@@ -34,7 +34,7 @@ from pathlib import Path
 APP_VERSION = "1.3.1"
 
 # User-Agent for API requests
-USER_AGENT = f"BusylightController/{APP_VERSION}"
+USER_AGENT = f"BLASSTController/{APP_VERSION}"
 
 # UI Text Constants
 APPLY_SETTINGS_BUTTON_TEXT = "Apply Settings"
@@ -80,6 +80,38 @@ dotenv.load_dotenv()
 
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def migrate_settings_from_busylight():
+    """Migrate settings from old Busylight location to new BLASST location.
+
+    This ensures users don't lose their settings when upgrading from the
+    old Busylight branding to the new BLASST branding.
+    """
+    old_settings = QSettings("Busylight", "BusylightController")
+    new_settings = QSettings("BLASST", "BLASSTController")
+
+    # Check if already migrated or if new settings already exist
+    if new_settings.value("settings_migrated_from_busylight", False, type=bool):
+        return  # Already migrated
+
+    # Check if there are old settings to migrate
+    old_keys = old_settings.allKeys()
+    if not old_keys:
+        # No old settings, mark as migrated and return
+        new_settings.setValue("settings_migrated_from_busylight", True)
+        return
+
+    # Copy all keys from old settings to new settings
+    for key in old_keys:
+        value = old_settings.value(key)
+        if value is not None:
+            new_settings.setValue(key, value)
+
+    # Mark migration as complete
+    new_settings.setValue("settings_migrated_from_busylight", True)
+    new_settings.sync()
+
+    print(f"[{get_timestamp()}] Migrated {len(old_keys)} settings from Busylight to BLASST")
 
 def get_resource_path(relative_path):
     """Get the absolute path to a resource file, works for dev and PyInstaller bundle"""
@@ -399,11 +431,11 @@ def get_log_directory():
     system = platform.system()
 
     if system == "Darwin":  # macOS
-        log_dir = Path.home() / "Library" / "Logs" / "Busylight"
+        log_dir = Path.home() / "Library" / "Logs" / "BLASST"
     elif system == "Windows":
-        log_dir = Path(os.getenv("APPDATA")) / "Busylight" / "Logs"
+        log_dir = Path(os.getenv("APPDATA")) / "BLASST" / "Logs"
     else:  # Linux and others
-        log_dir = Path.home() / ".local" / "share" / "Busylight" / "logs"
+        log_dir = Path.home() / ".local" / "share" / "BLASST" / "logs"
 
     # Create directory if it doesn't exist
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -411,7 +443,7 @@ def get_log_directory():
 
 def get_log_file_path():
     """Get the full path to the log file"""
-    return get_log_directory() / "BusylightController.log"
+    return get_log_directory() / "BLASSTController.log"
 
 class QtLogHandler(logging.Handler):
     """Custom log handler that emits Qt signals for UI updates"""
@@ -850,7 +882,7 @@ def setup_logging():
     global _qt_log_handler, _log_signal_emitter
 
     # Create logger
-    logger = logging.getLogger("BusylightController")
+    logger = logging.getLogger("BLASSTController")
     logger.setLevel(logging.DEBUG)
 
     # Clear any existing handlers
@@ -887,14 +919,14 @@ def setup_logging():
     _qt_log_handler.set_signal_emitter(_log_signal_emitter)
 
     # Log startup info
-    logger.info(f"BusylightController v{APP_VERSION} starting on {platform.system()} {platform.release()}")
+    logger.info(f"BLASSTController v{APP_VERSION} starting on {platform.system()} {platform.release()}")
     logger.info(f"Log file: {log_file}")
 
     return logger, _log_signal_emitter
 
 def get_logger():
     """Get the application logger"""
-    return logging.getLogger("BusylightController")
+    return logging.getLogger("BLASSTController")
 
 # Login dialog class
 class LoginDialog(QDialog):
@@ -908,7 +940,7 @@ class LoginDialog(QDialog):
         self.center_on_screen()
         
         # Initialize QSettings for credential storage
-        self.settings = QSettings("Busylight", "BusylightController")
+        self.settings = QSettings("BLASST", "BLASSTController")
         
         # Setup UI
         self.setup_ui()
@@ -1162,11 +1194,11 @@ class LoginDialog(QDialog):
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Busylight Configuration")
+        self.setWindowTitle("BLASST Configuration")
         self.resize(600, 500)  # Increased height for the new options
         
         # Load settings
-        self.settings = QSettings("Busylight", "BusylightController")
+        self.settings = QSettings("BLASST", "BLASSTController")
         
         # Setup UI
         self.setup_ui()
@@ -1756,7 +1788,7 @@ class ConfigDialog(QDialog):
                     return
                 
                 plist_dir = os.path.expanduser("~/Library/LaunchAgents")
-                plist_path = os.path.join(plist_dir, "com.busylight.controller.plist")
+                plist_path = os.path.join(plist_dir, "com.blasst.controller.plist")
                 
                 if enable:
                     os.makedirs(plist_dir, exist_ok=True)
@@ -1770,7 +1802,7 @@ class ConfigDialog(QDialog):
                     
                     # Label
                     ET.SubElement(dict_element, "key").text = "Label"
-                    ET.SubElement(dict_element, "string").text = "com.busylight.controller"
+                    ET.SubElement(dict_element, "string").text = "com.blasst.controller"
                     
                     # Program arguments
                     ET.SubElement(dict_element, "key").text = "ProgramArguments"
@@ -1824,11 +1856,11 @@ class ConfigDialog(QDialog):
                         app_path = app_path.replace('/', '\\')
                         
                         # Add to startup registry
-                        winreg.SetValueEx(key, "BusylightController", 0, winreg.REG_SZ, app_path)
+                        winreg.SetValueEx(key, "BLASSTController", 0, winreg.REG_SZ, app_path)
                         self.log_message.emit(f"[{get_timestamp()}] Added to Windows startup: {app_path}")
                     else:
                         try:
-                            winreg.DeleteValue(key, "BusylightController")
+                            winreg.DeleteValue(key, "BLASSTController")
                             self.log_message.emit(f"[{get_timestamp()}] Removed from Windows startup")
                         except FileNotFoundError:
                             pass
@@ -1952,7 +1984,7 @@ class HelpDialog(QDialog):
         """)
 
         # Title label
-        title_label = QLabel("Busylight Controller")
+        title_label = QLabel("BLASST Controller")
         title_label.setStyleSheet(f"""
             font-size: 24px;
             font-weight: bold;
@@ -5638,7 +5670,7 @@ class LightController(QObject):
             RGB tuple with brightness applied
         """
         # Load brightness setting (10-100%)
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
         brightness = settings.value("busylight/brightness", 100, type=int)
 
         # Apply brightness as a multiplier (convert percentage to 0.0-1.0)
@@ -5696,7 +5728,7 @@ class LightController(QObject):
         # This ensures alerts play a sound if the user has enabled alert tones
         if status == 'alert' and self.current_ringtone == 'off':
             # Load settings to check if alert tones are enabled
-            settings = QSettings("Busylight", "BusylightController")
+            settings = QSettings("BLASST", "BLASSTController")
             alert_tone_enabled = settings.value("busylight/alert_tone_enabled", True, type=bool)
 
             if alert_tone_enabled:
@@ -5981,7 +6013,7 @@ class LightController(QObject):
             self.log_message.emit(f"[{get_timestamp()}] Unknown ringtone: {ringtone_name}")
 
 # Main window class
-class BusylightApp(QMainWindow):
+class BLASSTApp(QMainWindow):
     def __init__(self, username=None, password=None, redis_info=None):
         super().__init__()
         self.username = username
@@ -6004,7 +6036,7 @@ class BusylightApp(QMainWindow):
         self.is_tray_visible = True
 
         # Initialize settings
-        self.settings = QSettings("Busylight", "BusylightController")
+        self.settings = QSettings("BLASST", "BLASSTController")
 
         # Initialize logging system
         logger, log_signal_emitter = setup_logging()
@@ -6034,7 +6066,7 @@ class BusylightApp(QMainWindow):
         self.add_log(f"[{get_timestamp()}] TTS Manager started")
 
         # Setup window title and icon
-        self.setWindowTitle("Busylight Controller")
+        self.setWindowTitle("BLASST Controller")
         icon_path = get_resource_path("icon.png")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -6515,7 +6547,7 @@ class BusylightApp(QMainWindow):
     def create_config_content(self, layout, colors):
         """Create the configuration content widgets"""
         # Load settings
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
 
         # Common QGroupBox styling
         group_style = f"""
@@ -7312,7 +7344,7 @@ class BusylightApp(QMainWindow):
         # Set a default icon - create a colored circle based on current status
         self.update_tray_icon(self.light_controller.current_status)
         
-        self.tray_icon.setToolTip("Busylight Controller")
+        self.tray_icon.setToolTip("BLASST Controller")
         
         # Create context menu for the tray
         tray_menu = QMenu()
@@ -7517,7 +7549,7 @@ class BusylightApp(QMainWindow):
                 return
 
             # Temporarily update the brightness in QSettings (in memory, not persisted yet)
-            settings = QSettings("Busylight", "BusylightController")
+            settings = QSettings("BLASST", "BLASSTController")
             settings.setValue("busylight/brightness", brightness_value)
 
             # Re-apply current status with the new brightness
@@ -7541,7 +7573,7 @@ class BusylightApp(QMainWindow):
                 return
 
             # Temporarily update the volume in QSettings (in memory, not persisted yet)
-            settings = QSettings("Busylight", "BusylightController")
+            settings = QSettings("BLASST", "BLASSTController")
             settings.setValue("busylight/volume", volume_value)
 
             # If currently testing the ringtone, update it with new volume
@@ -7766,7 +7798,7 @@ class BusylightApp(QMainWindow):
             self.apply_button.setText(APPLY_SETTINGS_BUTTON_TEXT_UPDATING)
 
         # Save settings from the configuration widgets
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
 
         # Save TTS settings (from Settings dialog widgets)
         if hasattr(self, 'tts_enabled_checkbox_settings'):
@@ -8286,7 +8318,7 @@ class BusylightApp(QMainWindow):
         """Sync event states from API to update resolved/acknowledged events"""
         try:
             # Check if we have credentials
-            settings = QSettings("Busylight", "BusylightController")
+            settings = QSettings("BLASST", "BLASSTController")
             username = settings.value("username")
             password = settings.value("password")
 
@@ -8448,7 +8480,7 @@ class BusylightApp(QMainWindow):
         if self.redis_info:
             user_groups = set(self.redis_info.get('groups', []))
             # Add username to user_groups
-            username = QSettings("Busylight", "BusylightController").value("username")
+            username = QSettings("BLASST", "BLASSTController").value("username")
             if username:
                 user_groups.add(username)
 
@@ -8611,7 +8643,7 @@ class BusylightApp(QMainWindow):
             return
 
         # Load TTS settings
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
         tts_enabled = settings.value("tts/enabled", False, type=bool)
 
         if not tts_enabled:
@@ -8637,7 +8669,7 @@ class BusylightApp(QMainWindow):
             return
 
         # Load TTS settings
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
         tts_enabled = settings.value("tts/enabled", False, type=bool)
 
         if not tts_enabled:
@@ -8679,7 +8711,7 @@ class BusylightApp(QMainWindow):
             return
 
         # Load URL settings
-        settings = QSettings("Busylight", "BusylightController")
+        settings = QSettings("BLASST", "BLASSTController")
         url_enabled = settings.value("url/enabled", False, type=bool)
 
         if not url_enabled:
@@ -10380,7 +10412,10 @@ def main():
     timer = QTimer()
     timer.start(500)  # Check for signals every 500ms
     timer.timeout.connect(lambda: None)  # No-op to allow signal processing
-    
+
+    # Migrate settings from old Busylight location to new BLASST location
+    migrate_settings_from_busylight()
+
     # Create default icon if needed
     create_default_icon()
     
@@ -10398,7 +10433,7 @@ def main():
     app.setWindowIcon(app_icon)
 
     # Set app_id/wm_class on Linux, no-op on Mac/Windows
-    app.setDesktopFileName("com.busylight.controller")
+    app.setDesktopFileName("com.blasst.controller")
     
     # Platform-specific customizations
     system = platform.system()
@@ -10418,10 +10453,10 @@ def main():
     print(f"[{get_timestamp()}] User '{username}' logged in successfully")
     
     # Create main window with credentials
-    window = BusylightApp(username, password, redis_info)
+    window = BLASSTApp(username, password, redis_info)
 
     # Check if we should show the window on startup
-    settings = QSettings("Busylight", "BusylightController")
+    settings = QSettings("BLASST", "BLASSTController")
     start_minimized = settings.value("app/start_minimized", False, type=bool)
 
     if not start_minimized:

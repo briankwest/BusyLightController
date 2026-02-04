@@ -1,5 +1,5 @@
 @echo off
-echo Building Busylight Controller for Windows
+echo Building BLASST Controller for Windows
 
 REM Check if Python is installed
 where python >nul 2>nul
@@ -28,6 +28,6 @@ python generate_icon.py
 
 REM Build the application
 echo Building application...
-pyinstaller busylight_win_build.spec
+pyinstaller blasst_win_build.spec
 
-echo Build complete! The executable can be found in the dist\BusylightController directory 
+echo Build complete! The executable can be found in the dist\BLASST Controller directory 
